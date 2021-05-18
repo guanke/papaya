@@ -11,6 +11,6 @@ func main() {
 	s := http.NewServeMux()
 
 	s.HandleFunc("/healthcheck", api.Healthcheck)
-	addr := ":8000"
+	addr := ":3000"
 	log.Fatal(http.ListenAndServe(addr, s))
 }
