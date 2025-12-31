@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"errors"
+	"sort"
 	"sync"
 
 	"github.com/sashabaranov/go-openai"
@@ -11,6 +12,17 @@ import (
 )
 
 const maxHistory = 10
+
+var defaultSystemMessages = []openai.ChatCompletionMessage{
+	{
+		Role:    openai.ChatMessageRoleSystem,
+		Content: "你是一名友好、简洁且乐于助人的助手，请在回答时尽量给出明确、可执行的建议。必要时可以用有序列表展示步骤。",
+	},
+	{
+		Role:    openai.ChatMessageRoleSystem,
+		Content: "如果用户的问题不完整，先提出澄清问题；如果问题已解决，可以简短总结。",
+	},
+}
 
 // Manager coordinates chat completion calls and per-user context.
 type Manager struct {
@@ -49,7 +61,8 @@ func (m *Manager) Chat(ctx context.Context, userID int64, prompt string) (string
 		m.mu.Unlock()
 		return "", errors.New("OpenAI client is not configured")
 	}
-	messages := append([]openai.ChatCompletionMessage{}, m.histories[userID]...)
+	messages := append([]openai.ChatCompletionMessage{}, defaultSystemMessages...)
+	messages = append(messages, m.histories[userID]...)
 	messages = append(messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: prompt})
 	if len(messages) > maxHistory {
 		messages = messages[len(messages)-maxHistory:]
@@ -96,4 +109,24 @@ func (m *Manager) Model() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.model
+}
+
+// ListModels fetches available model IDs from the API.
+func (m *Manager) ListModels(ctx context.Context) ([]string, error) {
+	m.mu.Lock()
+	client := m.client
+	m.mu.Unlock()
+	if client == nil {
+		return nil, errors.New("OpenAI client is not configured")
+	}
+	resp, err := client.ListModels(ctx)
+	if err != nil {
+		return nil, err
+	}
+	models := make([]string, 0, len(resp.Models))
+	for _, model := range resp.Models {
+		models = append(models, model.ID)
+	}
+	sort.Strings(models)
+	return models, nil
 }
