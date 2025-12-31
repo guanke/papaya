@@ -1,0 +1,19 @@
+version: "3.9"
+
+services:
+  papaya:
+    build: .
+    container_name: papaya-bot
+    restart: unless-stopped
+    environment:
+      - TG_BOT_SECRET=${TG_BOT_SECRET}
+      - TG_ADMIN_IDS=${TG_ADMIN_IDS}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL}
+      - OPENAI_MODEL=${OPENAI_MODEL}
+      - DATA_FILE=/app/data/papaya.db
+    volumes:
+      - papaya-data:/app/data
+
+volumes:
+  papaya-data:
