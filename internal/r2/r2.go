@@ -89,3 +89,12 @@ func (c *Client) Delete(key string) error {
 	})
 	return err
 }
+
+// GetURL returns the public URL for a given key.
+func (c *Client) GetURL(key string) string {
+    if c.publicURL == "" {
+        return ""
+    }
+    base := strings.TrimRight(c.publicURL, "/")
+    return fmt.Sprintf("%s/%s", base, key)
+}

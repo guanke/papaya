@@ -15,6 +15,7 @@ const (
 	usersBucket    = "users"
 	settingsBucket = "settings"
 	imagesBucket   = "images"
+    subsBucket     = "subs"
 	modelKey       = "openai_model"
 	rateLimitKey   = "chat_rate_limit"
 )
@@ -64,6 +65,9 @@ func New(path string) (*Store, error) {
 		if _, e := tx.CreateBucketIfNotExists([]byte(imagesBucket)); e != nil {
 			return e
 		}
+        if _, e := tx.CreateBucketIfNotExists([]byte(subsBucket)); e != nil {
+            return e
+        }
 		return nil
 	})
 	if err != nil {
@@ -460,6 +464,44 @@ func (s *Store) DeleteMedia(id string) error {
 
 func itob(v int64) []byte {
 	return []byte(fmt.Sprintf("%d", v))
+}
+
+// Subscribe adds a chat ID to the subscription list.
+func (s *Store) Subscribe(chatID int64) error {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+    return s.db.Update(func(tx *bbolt.Tx) error {
+        b := tx.Bucket([]byte(subsBucket))
+        return b.Put(itob(chatID), []byte("1"))
+    })
+}
+
+// Unsubscribe removes a chat ID from the subscription list.
+func (s *Store) Unsubscribe(chatID int64) error {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+    return s.db.Update(func(tx *bbolt.Tx) error {
+        b := tx.Bucket([]byte(subsBucket))
+        return b.Delete(itob(chatID))
+    })
+}
+
+// ListSubscribers returns all subscribed chat IDs.
+func (s *Store) ListSubscribers() ([]int64, error) {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+    
+    var ids []int64
+    err := s.db.View(func(tx *bbolt.Tx) error {
+        b := tx.Bucket([]byte(subsBucket))
+        return b.ForEach(func(k, _ []byte) error {
+            var id int64
+            fmt.Sscanf(string(k), "%d", &id)
+            ids = append(ids, id)
+            return nil
+        })
+    })
+    return ids, err
 }
 
 func saveUser(bucket *bbolt.Bucket, user *User) error {

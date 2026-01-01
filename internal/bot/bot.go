@@ -71,6 +71,10 @@ func (b *Bot) Run(ctx context.Context) error {
 		{Command: "images", Description: "[Admin] 媒体管理"},
 		{Command: "r2list", Description: "[Admin] R2文件列表"},
 		{Command: "r2upload", Description: "[Admin] 上传(回复图片)"},
+		{Command: "r2list", Description: "[Admin] R2文件列表"},
+		{Command: "r2upload", Description: "[Admin] 上传(回复图片)"},
+        {Command: "sub", Description: "[Admin] 订阅新图通知"},
+        {Command: "unsub", Description: "[Admin] 取消订阅"},
 	}
 	if _, err := b.api.Request(tgbotapi.NewSetMyCommands(commands...)); err != nil {
 		log.Printf("set commands failed: %v", err)
@@ -175,6 +179,8 @@ func (b *Bot) handleMessage(msg *tgbotapi.Message) {
             b.reply(msg, "保存失败。")
         } else {
             b.reply(msg, "已保存到媒体库！")
+            // Broadcast
+            go b.broadcastNewMedia(mediaID, mediaType, caption)
         }
         return
     }
@@ -203,6 +209,8 @@ func (b *Bot) handleMessage(msg *tgbotapi.Message) {
                     b.reply(msg, "保存失败。")
                 } else {
                     b.reply(msg, "已保存引用的媒体！")
+                    // Broadcast
+                    go b.broadcastNewMedia(mediaID, mediaType, caption)
                 }
                 return
             }
@@ -257,6 +265,27 @@ func (b *Bot) handleCommand(user *store.User, msg *tgbotapi.Message) {
 			return
 		}
 		b.handleR2Delete(msg)
+
+    case "sub":
+        if !user.IsAdmin {
+            b.reply(msg, "需要管理员权限。")
+            return
+        }
+        if err := b.store.Subscribe(msg.Chat.ID); err != nil {
+            b.reply(msg, fmt.Sprintf("订阅失败：%v", err))
+            return
+        }
+        b.reply(msg, "订阅成功！本频道将自动接收新收录的媒体。")
+    case "unsub":
+        if !user.IsAdmin {
+            b.reply(msg, "需要管理员权限。")
+            return
+        }
+        if err := b.store.Unsubscribe(msg.Chat.ID); err != nil {
+            b.reply(msg, fmt.Sprintf("取消订阅失败：%v", err))
+            return
+        }
+        b.reply(msg, "已取消订阅。")
 	case "checkin":
 		gained, updated, err := b.store.CheckIn(user.ID, checkInReward)
 		if err != nil {
@@ -492,36 +521,53 @@ func (b *Bot) showMediaList(chatID int64, page int) {
         if len([]rune(label)) > 10 {
             label = string([]rune(label)[:10]) + "..."
         }
-        typeIcon := "📷"
-        if m.Type == "video" {
-            typeIcon = "📹"
-        }
         
-        // R2 Status
-        r2Btn := tgbotapi.NewInlineKeyboardButtonData("☁️ 上传R2", fmt.Sprintf("upload_r2:%s", m.ID))
+        // Button 1: Filename (Preview)
+        previewBtn := tgbotapi.NewInlineKeyboardButtonData(label, fmt.Sprintf("preview:%s", m.ID))
+        
+        // Button Row
+        row := []tgbotapi.InlineKeyboardButton{previewBtn}
+        
         if m.R2Key != "" {
-            r2Btn = tgbotapi.NewInlineKeyboardButtonData("✅ 已上传", "noop")
+            // Already uploaded
+            var linkBtn tgbotapi.InlineKeyboardButton
+            if b.r2 != nil {
+                url := b.r2.GetURL(m.R2Key)
+                if url != "" {
+                    linkBtn = tgbotapi.NewInlineKeyboardButtonURL("链接", url)
+                } else {
+                     linkBtn = tgbotapi.NewInlineKeyboardButtonData("已上传", "noop")
+                }
+            } else {
+                 linkBtn = tgbotapi.NewInlineKeyboardButtonData("已上传", "noop")
+            }
+            
+            delR2Btn := tgbotapi.NewInlineKeyboardButtonData("删R2", fmt.Sprintf("del_r2:%s", m.ID))
+            row = append(row, linkBtn, delR2Btn)
+        } else {
+            // Not uploaded
+            uploadBtn := tgbotapi.NewInlineKeyboardButtonData("上传", fmt.Sprintf("upload_r2:%s", m.ID))
+            row = append(row, uploadBtn)
         }
         
-        row := []tgbotapi.InlineKeyboardButton{
-             tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("%s %s", typeIcon, label), "noop"),
-             r2Btn,
-             tgbotapi.NewInlineKeyboardButtonData("🗑 删除", fmt.Sprintf("del_media:%s", m.ID)),
-        }
+        // Button Last: Delete (Global)
+        delBtn := tgbotapi.NewInlineKeyboardButtonData("删除", fmt.Sprintf("del_media:%s", m.ID))
+        row = append(row, delBtn)
+        
         rows = append(rows, row)
     }
 
 	// Pagination buttons
 	var navRow []tgbotapi.InlineKeyboardButton
 	if page > 1 {
-		navRow = append(navRow, tgbotapi.NewInlineKeyboardButtonData("⬅️ 上一页", fmt.Sprintf("list_media:%d", page-1)))
+		navRow = append(navRow, tgbotapi.NewInlineKeyboardButtonData("上一页", fmt.Sprintf("list_media:%d", page-1)))
 	}
 	
 	// Jump button
-	navRow = append(navRow, tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("%d/%d 📄", page, totalPages), "jump_media_page"))
+	navRow = append(navRow, tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("%d/%d", page, totalPages), "jump_media_page"))
 	
 	if page < totalPages {
-		navRow = append(navRow, tgbotapi.NewInlineKeyboardButtonData("下一页 ➡️", fmt.Sprintf("list_media:%d", page+1)))
+		navRow = append(navRow, tgbotapi.NewInlineKeyboardButtonData("下一页", fmt.Sprintf("list_media:%d", page+1)))
 	}
 	if len(navRow) > 0 {
 		rows = append(rows, navRow)
@@ -775,9 +821,21 @@ func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
                 return
             }
             id := parts[1]
-            b.store.DeleteMedia(id)
-            // Refresh list (stay on page 1 for simplicity)
-            b.showMediaList(cb.Message.Chat.ID, 1)
+            b.handleDeleteMediaCallback(cb, id)
+        }
+    case strings.HasPrefix(data, "del_r2:"):
+        parts := strings.Split(data, ":")
+        if len(parts) == 2 {
+             if _, ok := b.ensureAdmin(cb); !ok {
+                return
+            }
+            id := parts[1]
+            b.handleDeleteR2Callback(cb, id)
+        }
+    case strings.HasPrefix(data, "preview:"):
+        parts := strings.Split(data, ":")
+        if len(parts) == 2 {
+             b.handlePreviewMedia(cb, parts[1])
         }
     case strings.HasPrefix(data, "upload_r2:"):
         parts := strings.Split(data, ":")
@@ -931,6 +989,101 @@ func (b *Bot) handleR2UploadCallback(cb *tgbotapi.CallbackQuery, mediaID string)
     // For now, let's just let the user refresh manually or jump. 
     // actually, updating to page 1 is safe fallback.
     b.showMediaList(cb.Message.Chat.ID, 1)
+}
+
+func (b *Bot) handlePreviewMedia(cb *tgbotapi.CallbackQuery, id string) {
+    m, err := b.store.GetMedia(id)
+    if err != nil {
+        b.reply(cb.Message, "媒体不存在。")
+        return
+    }
+    
+    var share tgbotapi.Chattable
+    if m.Type == "video" {
+        v := tgbotapi.NewVideo(cb.Message.Chat.ID, tgbotapi.FileID(m.FileID))
+        v.Caption = m.Caption
+        share = v
+    } else {
+        p := tgbotapi.NewPhoto(cb.Message.Chat.ID, tgbotapi.FileID(m.FileID))
+        p.Caption = m.Caption
+        share = p
+    }
+    
+    if _, err := b.api.Send(share); err != nil {
+         b.reply(cb.Message, fmt.Sprintf("预览失败：%v", err))
+    }
+}
+
+func (b *Bot) handleDeleteMediaCallback(cb *tgbotapi.CallbackQuery, id string) {
+    // 1. Check R2 and delete if exists
+    m, err := b.store.GetMedia(id)
+    if err == nil && m.R2Key != "" && b.r2 != nil {
+        if err := b.r2.Delete(m.R2Key); err != nil {
+            log.Printf("delete r2 failed: %v", err)
+            // Continue to delete from DB anyway
+        }
+    }
+    
+    // 2. Delete from DB
+    if err := b.store.DeleteMedia(id); err != nil {
+        b.reply(cb.Message, fmt.Sprintf("删除失败：%v", err))
+        return
+    }
+    
+    b.showMediaList(cb.Message.Chat.ID, 1)
+}
+
+func (b *Bot) handleDeleteR2Callback(cb *tgbotapi.CallbackQuery, id string) {
+    m, err := b.store.GetMedia(id)
+    if err != nil {
+        b.reply(cb.Message, "媒体不存在。")
+        return
+    }
+    if m.R2Key == "" {
+        b.reply(cb.Message, "未上传到 R2。")
+        return
+    }
+    if b.r2 == nil {
+        b.reply(cb.Message, "R2 未配置。")
+        return
+    }
+    
+    if err := b.r2.Delete(m.R2Key); err != nil {
+        b.reply(cb.Message, fmt.Sprintf("R2 删除失败：%v", err))
+        return
+    }
+    
+    if err := b.store.SetMediaR2(id, ""); err != nil {
+        log.Printf("clear r2 key failed: %v", err)
+    }
+    
+    b.showMediaList(cb.Message.Chat.ID, 1)
+}
+
+
+
+func (b *Bot) broadcastNewMedia(fileID, mediaType, caption string) {
+    ids, err := b.store.ListSubscribers()
+    if err != nil {
+        log.Printf("list subscribers failed: %v", err)
+        return
+    }
+    
+    for _, chatID := range ids {
+        var share tgbotapi.Chattable
+        if mediaType == "video" {
+            v := tgbotapi.NewVideo(chatID, tgbotapi.FileID(fileID))
+            v.Caption = "New! " + caption
+            share = v
+        } else {
+            p := tgbotapi.NewPhoto(chatID, tgbotapi.FileID(fileID))
+            p.Caption = "New! " + caption
+            share = p
+        }
+        if _, err := b.api.Send(share); err != nil {
+            log.Printf("broadcast to %d failed: %v", chatID, err)
+        }
+    }
 }
 
 func (b *Bot) handleCustomPointsRequest(cb *tgbotapi.CallbackQuery) {
