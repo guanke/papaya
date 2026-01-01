@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+    "sync"
 	"strconv"
 	"strings"
 	"time"
@@ -24,8 +25,9 @@ const (
 type Bot struct {
 	api   *tgbotapi.BotAPI
 	store *store.Store
-	chat  *chat.Manager
-	cfg   *config.Config
+	chat       *chat.Manager
+	cfg        *config.Config
+	userStates sync.Map // map[int64]string (userID -> state)
 }
 
 // New creates a Bot instance.
@@ -78,6 +80,27 @@ func (b *Bot) handleMessage(msg *tgbotapi.Message) {
 		}
 	}
 
+    if state, ok := b.userStates.Load(userID); ok {
+        s := state.(string)
+        if strings.HasPrefix(s, "waiting_custom_points:") {
+            b.userStates.Delete(userID)
+            targetIDStr := strings.TrimPrefix(s, "waiting_custom_points:")
+            targetID, _ := strconv.ParseInt(targetIDStr, 10, 64)
+            points, err := strconv.Atoi(msg.Text)
+            if err != nil {
+                b.reply(msg, "输入无效，请输入整数。")
+                return
+            }
+            updated, err := b.store.AddPoints(targetID, points)
+            if err != nil {
+                b.reply(msg, fmt.Sprintf("修改失败：%v", err))
+                return
+            }
+            b.reply(msg, fmt.Sprintf("用户 %d 当前积分：%d", updated.ID, updated.Points))
+            return
+        }
+    }
+
 	if msg.IsCommand() {
 		b.handleCommand(user, msg)
 		return
@@ -88,7 +111,13 @@ func (b *Bot) handleMessage(msg *tgbotapi.Message) {
 func (b *Bot) handleCommand(user *store.User, msg *tgbotapi.Message) {
 	switch msg.Command() {
 	case "start", "help":
-		b.reply(msg, b.helpText(user.IsAdmin))
+        msgResp := tgbotapi.NewMessage(msg.Chat.ID, b.helpText(user.IsAdmin))
+        msgResp.ReplyToMessageID = msg.MessageID
+        urlBtn := tgbotapi.NewInlineKeyboardButtonURL("打开官网", "https://google.com")
+        msgResp.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup([]tgbotapi.InlineKeyboardButton{urlBtn})
+        if _, err := b.api.Send(msgResp); err != nil {
+             log.Printf("send help failed: %v", err)
+        }
 	case "checkin":
 		gained, updated, err := b.store.CheckIn(user.ID, checkInReward)
 		if err != nil {
@@ -157,13 +186,24 @@ func (b *Bot) handleChat(user *store.User, msg *tgbotapi.Message) {
 }
 
 func (b *Bot) handleListUsers(msg *tgbotapi.Message) {
-	users, err := b.store.ListUsers()
+    page := 1
+    if msg.ReplyToMessage != nil && msg.ReplyToMessage.ReplyMarkup != nil {
+        // This might be a callback update, but simpler to just default to 1 for command
+    }
+    b.showUserList(msg.Chat.ID, page)
+}
+
+func (b *Bot) showUserList(chatID int64, page int) {
+    limit := 10
+    offset := (page - 1) * limit
+	users, err := b.store.ListUsers(limit, offset)
 	if err != nil {
-		b.reply(msg, "无法获取户列表。")
-		return
+        log.Printf("list users failed: %v", err)
+        return
 	}
-	if len(users) == 0 {
-		b.reply(msg, "暂无用户。")
+	if len(users) == 0 && page == 1 {
+        msg := tgbotapi.NewMessage(chatID, "暂无用户。")
+        b.api.Send(msg)
 		return
 	}
 	var rows [][]tgbotapi.InlineKeyboardButton
@@ -179,8 +219,23 @@ func (b *Bot) handleListUsers(msg *tgbotapi.Message) {
 			rows[len(rows)-1] = append(rows[len(rows)-1], btn)
 		}
 	}
+
+    // Pagination buttons
+    var navRow []tgbotapi.InlineKeyboardButton
+    if page > 1 {
+        navRow = append(navRow, tgbotapi.NewInlineKeyboardButtonData("上一页", fmt.Sprintf("list_users:%d", page-1)))
+    }
+    // Simple check if we might have more: if we got a full page, assume there might be more. 
+    // Or we could count total, but for now just show Next if we have 'limit' items.
+    if len(users) == limit {
+        navRow = append(navRow, tgbotapi.NewInlineKeyboardButtonData("下一页", fmt.Sprintf("list_users:%d", page+1)))
+    }
+    if len(navRow) > 0 {
+        rows = append(rows, navRow)
+    }
+
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
-	resp := tgbotapi.NewMessage(msg.Chat.ID, "选择一个用户进行管理：")
+	resp := tgbotapi.NewMessage(chatID, fmt.Sprintf("用户列表 (第 %d 页)：", page))
 	resp.ReplyMarkup = keyboard
 	if _, err := b.api.Send(resp); err != nil {
 		log.Printf("send user list failed: %v", err)
@@ -301,10 +356,18 @@ func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
 		b.handleUserSelection(cb)
 	case strings.HasPrefix(data, "add:"):
 		b.handleAdjustPoints(cb)
+    case strings.HasPrefix(data, "add_custom:"):
+        b.handleCustomPointsRequest(cb)
 	case strings.HasPrefix(data, "promote:"):
 		b.handlePromote(cb)
 	case strings.HasPrefix(data, "setmodel:"):
 		b.handleModelSelection(cb)
+    case strings.HasPrefix(data, "list_users:"):
+        parts := strings.Split(data, ":")
+        if len(parts) == 2 {
+            page, _ := strconv.Atoi(parts[1])
+            b.showUserList(cb.Message.Chat.ID, page)
+        }
 	default:
 		log.Printf("unknown callback: %s", data)
 	}
@@ -340,9 +403,13 @@ func (b *Bot) handleUserSelection(cb *tgbotapi.CallbackQuery) {
 	}
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(
 		[]tgbotapi.InlineKeyboardButton{
-			tgbotapi.NewInlineKeyboardButtonData("+10 积分", fmt.Sprintf("add:%d:10", targetID)),
-			tgbotapi.NewInlineKeyboardButtonData("-10 积分", fmt.Sprintf("add:%d:-10", targetID)),
+			tgbotapi.NewInlineKeyboardButtonData("+10", fmt.Sprintf("add:%d:10", targetID)),
+			tgbotapi.NewInlineKeyboardButtonData("+100", fmt.Sprintf("add:%d:100", targetID)),
+			tgbotapi.NewInlineKeyboardButtonData("+500", fmt.Sprintf("add:%d:500", targetID)),
 		},
+        []tgbotapi.InlineKeyboardButton{
+            tgbotapi.NewInlineKeyboardButtonData("自定义", fmt.Sprintf("add_custom:%d", targetID)),
+        },
 		[]tgbotapi.InlineKeyboardButton{
 			tgbotapi.NewInlineKeyboardButtonData("设为管理员", fmt.Sprintf("promote:%d", targetID)),
 		},
@@ -352,6 +419,26 @@ func (b *Bot) handleUserSelection(cb *tgbotapi.CallbackQuery) {
 	if _, err := b.api.Send(msg); err != nil {
 		log.Printf("send user actions failed: %v", err)
 	}
+}
+
+func (b *Bot) handleCustomPointsRequest(cb *tgbotapi.CallbackQuery) {
+	if _, ok := b.ensureAdmin(cb); !ok {
+		return
+	}
+	parts := strings.Split(cb.Data, ":")
+	if len(parts) != 2 {
+		return
+	}
+    targetID := parts[1]
+	if _, err := strconv.ParseInt(targetID, 10, 64); err != nil {
+        return
+    }
+
+    b.userStates.Store(cb.From.ID, fmt.Sprintf("waiting_custom_points:%s", targetID))
+    msg := tgbotapi.NewMessage(cb.Message.Chat.ID, fmt.Sprintf("请输入要给用户 %s 增加的积分（支持负数）：", targetID))
+    if _, err := b.api.Send(msg); err != nil {
+         log.Printf("send input prompt failed: %v", err)
+    }
 }
 
 func (b *Bot) handleAdjustPoints(cb *tgbotapi.CallbackQuery) {

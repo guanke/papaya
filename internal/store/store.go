@@ -197,8 +197,8 @@ func (s *Store) CheckIn(id int64, reward int) (int, *User, error) {
 	return gained, &user, nil
 }
 
-// ListUsers retrieves all users sorted by ID.
-func (s *Store) ListUsers() ([]User, error) {
+// ListUsers retrieves all users sorted by ID with pagination.
+func (s *Store) ListUsers(limit, offset int) ([]User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -218,7 +218,15 @@ func (s *Store) ListUsers() ([]User, error) {
 		return nil, err
 	}
 	sort.Slice(users, func(i, j int) bool { return users[i].ID < users[j].ID })
-	return users, nil
+
+    if offset >= len(users) {
+        return []User{}, nil
+    }
+    end := offset + limit
+    if end > len(users) {
+        end = len(users)
+    }
+	return users[offset:end], nil
 }
 
 // SetModel updates the stored OpenAI model name.
