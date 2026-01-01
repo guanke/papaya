@@ -16,18 +16,21 @@ const (
 	settingsBucket = "settings"
 	imagesBucket   = "images"
     subsBucket     = "subs"
+    historyBucket  = "history"
 	modelKey       = "openai_model"
 	rateLimitKey   = "chat_rate_limit"
+	visionKey      = "vision_enabled"
 )
 
 // User represents a Telegram user state.
 type User struct {
-	ID          int64  `json:"id"`
+	ID          string `json:"id"`
 	Username    string `json:"username"`
 	Points      int    `json:"points"`
 	LastCheckin string `json:"last_checkin"`
 	IsAdmin     bool   `json:"is_admin"`
 	DisplayName string `json:"display_name"`
+	Persona     string `json:"persona,omitempty"`
 }
 
 // Media represents a saved telegram photo or video.
@@ -36,9 +39,10 @@ type Media struct {
 	FileID    string `json:"file_id"`
 	Type      string `json:"type"` // "photo" or "video"
 	Caption   string `json:"caption"`
-	AddedBy   int64  `json:"added_by"`
+	AddedBy   string `json:"added_by"`
 	CreatedAt int64  `json:"created_at"`
-	R2Key     string `json:"r2_key,omitempty"` // Key in R2 bucket if uploaded
+	R2Key     string   `json:"r2_key,omitempty"` // Key in R2 bucket if uploaded
+	Tags      []string `json:"tags,omitempty"`
 }
 
 // Store persists user data and settings to BoltDB.
@@ -68,6 +72,9 @@ func New(path string) (*Store, error) {
         if _, e := tx.CreateBucketIfNotExists([]byte(subsBucket)); e != nil {
             return e
         }
+        if _, e := tx.CreateBucketIfNotExists([]byte(historyBucket)); e != nil {
+            return e
+        }
 		return nil
 	})
 	if err != nil {
@@ -82,15 +89,16 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// GetOrCreateUser fetches a user or creates it with defaults.
-func (s *Store) GetOrCreateUser(id int64, username, displayName string) (*User, error) {
+// GetOrCreateUser retrieves or creates a user.
+func (s *Store) GetOrCreateUser(id string, username, displayName string) (*User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	var user User
 	err := s.db.Update(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket([]byte(usersBucket))
-		data := bucket.Get(itob(id))
+		key := []byte(id)
+		data := bucket.Get(key)
 		if data != nil {
 			if err := json.Unmarshal(data, &user); err != nil {
 				return err
@@ -112,17 +120,18 @@ func (s *Store) GetOrCreateUser(id int64, username, displayName string) (*User, 
 	return &user, nil
 }
 
-// AddPoints adjusts a user's points by delta.
-func (s *Store) AddPoints(id int64, delta int) (*User, error) {
+// AddPoints adds points to a user.
+func (s *Store) AddPoints(id string, delta int) (*User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	var user User
 	err := s.db.Update(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket([]byte(usersBucket))
-		data := bucket.Get(itob(id))
+		key := []byte(id)
+		data := bucket.Get(key)
 		if data == nil {
-			return fmt.Errorf("user %d not found", id)
+			return fmt.Errorf("user %s not found", id)
 		}
 		if err := json.Unmarshal(data, &user); err != nil {
 			return err
@@ -137,16 +146,17 @@ func (s *Store) AddPoints(id int64, delta int) (*User, error) {
 }
 
 // SetPoints sets a user's points to a specific value.
-func (s *Store) SetPoints(id int64, points int) (*User, error) {
+func (s *Store) SetPoints(id string, points int) (*User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	var user User
 	err := s.db.Update(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket([]byte(usersBucket))
-		data := bucket.Get(itob(id))
+		key := []byte(id)
+		data := bucket.Get(key)
 		if data == nil {
-			return fmt.Errorf("user %d not found", id)
+			return fmt.Errorf("user %s not found", id)
 		}
 		if err := json.Unmarshal(data, &user); err != nil {
 			return err
@@ -160,17 +170,18 @@ func (s *Store) SetPoints(id int64, points int) (*User, error) {
 	return &user, nil
 }
 
-// PromoteAdmin grants admin role to a user.
-func (s *Store) PromoteAdmin(id int64) (*User, error) {
+// PromoteAdmin promotes a user to admin.
+func (s *Store) PromoteAdmin(id string) (*User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	var user User
 	err := s.db.Update(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket([]byte(usersBucket))
-		data := bucket.Get(itob(id))
+		key := []byte(id)
+		data := bucket.Get(key)
 		if data == nil {
-			return fmt.Errorf("user %d not found", id)
+			return fmt.Errorf("user %s not found", id)
 		}
 		if err := json.Unmarshal(data, &user); err != nil {
 			return err
@@ -185,7 +196,7 @@ func (s *Store) PromoteAdmin(id int64) (*User, error) {
 }
 
 // CheckIn processes a daily check-in and returns gained points or an error.
-func (s *Store) CheckIn(id int64, reward int) (int, *User, error) {
+func (s *Store) CheckIn(id string, reward int) (int, *User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -193,7 +204,8 @@ func (s *Store) CheckIn(id int64, reward int) (int, *User, error) {
 	var gained int
 	err := s.db.Update(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket([]byte(usersBucket))
-		data := bucket.Get(itob(id))
+		key := []byte(id)
+		data := bucket.Get(key)
 		if data == nil {
 			return errors.New("user not found")
 		}
@@ -327,23 +339,22 @@ func (s *Store) GetMedia(id string) (*Media, error) {
 	return &media, nil
 }
 
-// SaveMedia persists a new media record.
-func (s *Store) SaveMedia(fileID, mediaType, caption string, addedBy int64) error {
+// SaveMedia saves a media item.
+func (s *Store) SaveMedia(id, paramsType, caption string, addedBy string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	m := Media{
+		ID:        id,
+		FileID:    id, // Assuming ID is FileID for now
+		Type:      paramsType,
+		Caption:   caption,
+		AddedBy:   addedBy,
+		CreatedAt: time.Now().Unix(),
+	}
 	return s.db.Update(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket([]byte(imagesBucket))
-		id := fmt.Sprintf("%d", time.Now().UnixNano())
-		media := Media{
-			ID:        id,
-			FileID:    fileID,
-			Type:      mediaType,
-			Caption:   caption,
-			AddedBy:   addedBy,
-			CreatedAt: time.Now().Unix(),
-		}
-		data, err := json.Marshal(media)
+		data, err := json.Marshal(m)
 		if err != nil {
 			return err
 		}
@@ -462,46 +473,40 @@ func (s *Store) DeleteMedia(id string) error {
 	})
 }
 
-func itob(v int64) []byte {
-	return []byte(fmt.Sprintf("%d", v))
+// Subscribe adds a chat ID to subscriptions
+func (s *Store) Subscribe(chatID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte(subsBucket))
+		// We use the chatID as the key.
+		return b.Put([]byte(chatID), []byte("1"))
+	})
 }
 
-// Subscribe adds a chat ID to the subscription list.
-func (s *Store) Subscribe(chatID int64) error {
-    s.mu.Lock()
-    defer s.mu.Unlock()
-    return s.db.Update(func(tx *bbolt.Tx) error {
-        b := tx.Bucket([]byte(subsBucket))
-        return b.Put(itob(chatID), []byte("1"))
-    })
+// Unsubscribe removes a chat ID
+func (s *Store) Unsubscribe(chatID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte(subsBucket))
+		return b.Delete([]byte(chatID))
+	})
 }
 
-// Unsubscribe removes a chat ID from the subscription list.
-func (s *Store) Unsubscribe(chatID int64) error {
-    s.mu.Lock()
-    defer s.mu.Unlock()
-    return s.db.Update(func(tx *bbolt.Tx) error {
-        b := tx.Bucket([]byte(subsBucket))
-        return b.Delete(itob(chatID))
-    })
-}
-
-// ListSubscribers returns all subscribed chat IDs.
-func (s *Store) ListSubscribers() ([]int64, error) {
-    s.mu.Lock()
-    defer s.mu.Unlock()
-    
-    var ids []int64
-    err := s.db.View(func(tx *bbolt.Tx) error {
-        b := tx.Bucket([]byte(subsBucket))
-        return b.ForEach(func(k, _ []byte) error {
-            var id int64
-            fmt.Sscanf(string(k), "%d", &id)
-            ids = append(ids, id)
-            return nil
-        })
-    })
-    return ids, err
+// ListSubscribers returns all subscriber IDs
+func (s *Store) ListSubscribers() ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var ids []string
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte(subsBucket))
+		return b.ForEach(func(k, v []byte) error {
+			ids = append(ids, string(k))
+			return nil
+		})
+	})
+	return ids, err
 }
 
 func saveUser(bucket *bbolt.Bucket, user *User) error {
@@ -509,5 +514,5 @@ func saveUser(bucket *bbolt.Bucket, user *User) error {
 	if err != nil {
 		return err
 	}
-	return bucket.Put(itob(user.ID), data)
+	return bucket.Put([]byte(user.ID), data)
 }

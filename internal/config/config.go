@@ -9,7 +9,8 @@ import (
 // Config holds runtime configuration derived from environment variables.
 type Config struct {
 	BotToken     string
-	AdminIDs     []int64
+	DiscordToken string
+	AdminIDs     []string
 	OpenAIKey    string
 	OpenAIBase   string
 	Model        string
@@ -27,6 +28,7 @@ type Config struct {
 func Load() (*Config, error) {
 	cfg := &Config{
 		BotToken:     os.Getenv("TG_BOT_SECRET"),
+		DiscordToken: os.Getenv("DISCORD_TOKEN"),
 		OpenAIKey:    os.Getenv("OPENAI_API_KEY"),
 		OpenAIBase:   os.Getenv("OPENAI_BASE_URL"),
 		Model:        os.Getenv("OPENAI_MODEL"),
@@ -52,11 +54,8 @@ func Load() (*Config, error) {
 		if id == "" {
 			continue
 		}
-		value, err := parseInt64(id)
-		if err != nil {
-			return nil, fmt.Errorf("invalid TG_ADMIN_IDS entry %q: %w", id, err)
-		}
-		cfg.AdminIDs = append(cfg.AdminIDs, value)
+		// Assuming TG_ADMIN_IDS contains IDs. We just store them as strings now.
+		cfg.AdminIDs = append(cfg.AdminIDs, id)
 	}
 
 	return cfg, nil
@@ -69,8 +68,4 @@ func envOrDefault(key, fallback string) string {
 	return fallback
 }
 
-func parseInt64(value string) (int64, error) {
-	var result int64
-	_, err := fmt.Sscan(value, &result)
-	return result, err
-}
+

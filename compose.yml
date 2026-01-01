@@ -6,6 +6,7 @@ services:
     environment:
       - TG_BOT_SECRET=${TG_BOT_SECRET}
       - TG_ADMIN_IDS=${TG_ADMIN_IDS}
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_BASE_URL=${OPENAI_BASE_URL}
       - OPENAI_MODEL=${OPENAI_MODEL}

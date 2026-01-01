@@ -21,19 +21,32 @@ func TestStore_ListUsersParameters(t *testing.T) {
 	}
 	defer s.Close()
 
-	// 1. Empty list
+	// Test Create/Get User
+	uid := "123456"
+	user, err := s.GetOrCreateUser(uid, "testuser", "Test User")
+	if err != nil {
+		t.Fatalf("create user failed: %v", err)
+	}
+	if user.ID != uid {
+		t.Errorf("expected id %s, got %s", uid, user.ID)
+	}
+
+	// 1. Empty list (after creating one user)
 	users, err := s.ListUsers(10, 0)
 	if err != nil {
 		t.Fatalf("ListUsers empty failed: %v", err)
 	}
-	if len(users) != 0 {
-		t.Errorf("Expected 0 users, got %d", len(users))
+	if len(users) != 1 { // Now it should have 1 user
+		t.Errorf("Expected 1 user, got %d", len(users))
+	}
+	if users[0].ID != uid {
+		t.Errorf("Expected user ID %s, got %s", uid, users[0].ID)
 	}
 
 	// 2. Populate 25 users
 	total := 25
 	for i := 1; i <= total; i++ {
-		uid := int64(100 + i) // IDs 101..125
+		uid := fmt.Sprintf("%d", 100+i) // IDs 101..125
 		_, err := s.GetOrCreateUser(uid, fmt.Sprintf("user%d", i), fmt.Sprintf("User %d", i))
 		if err != nil {
 			t.Fatalf("create user failed: %v", err)
@@ -46,14 +59,14 @@ func TestStore_ListUsersParameters(t *testing.T) {
 		limit   int
 		offset  int
 		wantLen int
-		startID int64
-		endID   int64
+		startID string
+		endID   string
 	}{
-		{"Page 1", 10, 0, 10, 101, 110},
-		{"Page 2", 10, 10, 10, 111, 120},
-		{"Page 3", 10, 20, 5, 121, 125},
-		{"Page 4 (Empty)", 10, 30, 0, 0, 0},
-		{"Large Limit", 100, 0, 25, 101, 125},
+		{"Page 1", 10, 0, 10, "101", "110"},
+		{"Page 2", 10, 10, 10, "111", "120"},
+		{"Page 3", 10, 20, 5, "121", "125"},
+		{"Page 4 (Empty)", 10, 30, 0, "", ""},
+		{"Large Limit", 100, 0, 25, "101", "125"},
 	}
 
 	for _, tt := range tests {
@@ -67,10 +80,10 @@ func TestStore_ListUsersParameters(t *testing.T) {
 			}
 			if tt.wantLen > 0 {
 				if got[0].ID != tt.startID {
-					t.Errorf("first user ID got %d, want %d", got[0].ID, tt.startID)
+					t.Errorf("first user ID got %s, want %s", got[0].ID, tt.startID)
 				}
 				if got[len(got)-1].ID != tt.endID {
-					t.Errorf("last user ID got %d, want %d", got[len(got)-1].ID, tt.endID)
+					t.Errorf("last user ID got %s, want %s", got[len(got)-1].ID, tt.endID)
 				}
 			}
 		})
@@ -92,7 +105,7 @@ func TestStore_Media(t *testing.T) {
 	defer s.Close()
 
 	// 1. Save Media
-    err = s.SaveMedia("file_123", "photo", "caption 1", 1001)
+    err = s.SaveMedia("file_123", "photo", "caption 1", "1001")
     if err != nil {
         t.Fatalf("SaveMedia failed: %v", err)
     }
@@ -158,7 +171,7 @@ func TestStore_MediaR2AndCount(t *testing.T) {
     }
 
     // 2. Add item
-    err = s.SaveMedia("f1", "photo", "c1", 1)
+    err = s.SaveMedia("f1", "photo", "c1", "1")
     if err != nil {
         t.Fatal(err)
     }
