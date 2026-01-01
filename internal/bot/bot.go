@@ -539,9 +539,14 @@ func (b *Bot) showModelList(chatID int64) {
 		return
 	}
 
+	currentModel := b.chat.Model()
 	var rows [][]tgbotapi.InlineKeyboardButton
 	for i, m := range models {
-		btn := tgbotapi.NewInlineKeyboardButtonData(m, fmt.Sprintf("setmodel:%s", m))
+		label := m
+		if m == currentModel {
+			label += " ✅"
+		}
+		btn := tgbotapi.NewInlineKeyboardButtonData(label, fmt.Sprintf("setmodel:%s", m))
 		if i%2 == 0 {
 			rows = append(rows, []tgbotapi.InlineKeyboardButton{btn})
 		} else {

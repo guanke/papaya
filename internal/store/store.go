@@ -15,6 +15,7 @@ const (
 	usersBucket    = "users"
 	settingsBucket = "settings"
 	modelKey       = "openai_model"
+	rateLimitKey   = "chat_rate_limit"
 )
 
 // User represents a Telegram user state.
@@ -255,6 +256,35 @@ func (s *Store) GetModel() (string, error) {
 		return nil
 	})
 	return model, err
+}
+
+// SetRateLimit updates the allowed chat requests per minute. A value <=0 disables the limit.
+func (s *Store) SetRateLimit(limit int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(settingsBucket))
+		return bucket.Put([]byte(rateLimitKey), []byte(fmt.Sprintf("%d", limit)))
+	})
+}
+
+// GetRateLimit returns the stored chat rate limit per minute. When unset, returns 0.
+func (s *Store) GetRateLimit() (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var limit int
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(settingsBucket))
+		value := bucket.Get([]byte(rateLimitKey))
+		if value == nil {
+			return nil
+		}
+		_, parseErr := fmt.Sscanf(string(value), "%d", &limit)
+		return parseErr
+	})
+	return limit, err
 }
 
 func itob(v int64) []byte {
