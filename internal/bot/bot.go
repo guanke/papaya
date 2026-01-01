@@ -120,6 +120,14 @@ func (b *Bot) handleMessage(msg *tgbotapi.Message) {
 		b.handleCommand(user, msg)
 		return
 	}
+
+    // In group chats, only respond if mentioned
+    if msg.Chat.IsGroup() || msg.Chat.IsSuperGroup() {
+        if !strings.Contains(msg.Text, "@"+b.api.Self.UserName) {
+            return
+        }
+    }
+
 	b.handleChat(user, msg)
 }
 
