@@ -40,7 +40,22 @@ func New(cfg *config.Config, st *store.Store, manager *chat.Manager) (*Bot, erro
 }
 
 // Run starts processing Telegram updates.
+// Run starts processing Telegram updates.
 func (b *Bot) Run(ctx context.Context) error {
+	commands := []tgbotapi.BotCommand{
+		{Command: "checkin", Description: "每日签到"},
+		{Command: "points", Description: "查看积分"},
+		{Command: "help", Description: "使用说明"},
+		{Command: "users", Description: "[Admin] 用户列表"},
+		{Command: "addpoints", Description: "[Admin] 增减积分"},
+		{Command: "setpoints", Description: "[Admin] 设定积分"},
+		{Command: "setmodel", Description: "[Admin] 切换模型"},
+		{Command: "setadmin", Description: "[Admin] 设管理员"},
+	}
+	if _, err := b.api.Request(tgbotapi.NewSetMyCommands(commands...)); err != nil {
+		log.Printf("set commands failed: %v", err)
+	}
+
 	log.Printf("Bot authorized as @%s", b.api.Self.UserName)
 	updateCfg := tgbotapi.NewUpdate(0)
 	updateCfg.Timeout = 30
