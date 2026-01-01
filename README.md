@@ -25,6 +25,8 @@ Papaya 是一个使用 Go 编写的 Telegram 机器人，支持每日签到赚�
 | `/addpoints <user_id> <delta>` | 管理员：增减用户积分 |
 | `/setpoints <user_id> <points>` | 管理员：设定用户积分 |
 | `/setmodel <model>` | 管理员：设置调用的模型 |
+| `/ratelimit` | 管理员：查看当前聊天速率限制 |
+| `/setratelimit <per_minute>` | 管理员：设置每分钟聊天次数上限（0 表示不限） |
 | `/setadmin <user_id>` | 管理员：赋予管理员权限 |
 
 ## 快速开始
@@ -91,6 +93,8 @@ Papaya is a Telegram bot written in Go. It offers daily check-ins for points, Op
 | `/addpoints <user_id> <delta>` | Admin: add/subtract points |
 | `/setpoints <user_id> <points>` | Admin: set points |
 | `/setmodel <model>` | Admin: configure the model |
+| `/ratelimit` | Admin: view current chat rate limit |
+| `/setratelimit <per_minute>` | Admin: set chat limit per minute (0 to disable) |
 | `/setadmin <user_id>` | Admin: grant admin role |
 
 ### Environment Variables

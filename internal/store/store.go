@@ -220,13 +220,13 @@ func (s *Store) ListUsers(limit, offset int) ([]User, error) {
 	}
 	sort.Slice(users, func(i, j int) bool { return users[i].ID < users[j].ID })
 
-    if offset >= len(users) {
-        return []User{}, nil
-    }
-    end := offset + limit
-    if end > len(users) {
-        end = len(users)
-    }
+	if offset >= len(users) {
+		return []User{}, nil
+	}
+	end := offset + limit
+	if end > len(users) {
+		end = len(users)
+	}
 	return users[offset:end], nil
 }
 
@@ -269,22 +269,23 @@ func (s *Store) SetRateLimit(limit int) error {
 	})
 }
 
-// GetRateLimit returns the stored chat rate limit per minute. When unset, returns 0.
-func (s *Store) GetRateLimit() (int, error) {
+// GetRateLimit returns the stored chat rate limit per minute and whether it was set.
+// A stored value <=0 means the rate limit is disabled.
+func (s *Store) GetRateLimit() (limit int, ok bool, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	var limit int
-	err := s.db.View(func(tx *bbolt.Tx) error {
+	err = s.db.View(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket([]byte(settingsBucket))
 		value := bucket.Get([]byte(rateLimitKey))
 		if value == nil {
 			return nil
 		}
+		ok = true
 		_, parseErr := fmt.Sscanf(string(value), "%d", &limit)
 		return parseErr
 	})
-	return limit, err
+	return
 }
 
 func itob(v int64) []byte {

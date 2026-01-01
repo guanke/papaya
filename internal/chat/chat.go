@@ -3,15 +3,20 @@ package chat
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/sashabaranov/go-openai"
 
 	"github.com/guanke/papaya/internal/store"
 )
 
-const maxHistory = 10
+const (
+	maxHistory             = 10
+	defaultRateLimitPerMin = 20
+)
 
 var defaultSystemMessages = []openai.ChatCompletionMessage{
 	{
@@ -30,7 +35,14 @@ type Manager struct {
 	store     *store.Store
 	model     string
 	histories map[int64][]openai.ChatCompletionMessage
+	rateLimit int
+	rates     map[int64]rateWindow
 	mu        sync.Mutex
+}
+
+type rateWindow struct {
+	start time.Time
+	count int
 }
 
 // NewManager creates a new chat manager. If apiKey is empty, the Manager is created
@@ -46,11 +58,20 @@ func NewManager(apiKey, baseURL, model string, st *store.Store) *Manager {
 		c = client
 	}
 
+	rateLimit := defaultRateLimitPerMin
+	if st != nil {
+		if stored, ok, err := st.GetRateLimit(); err == nil && ok {
+			rateLimit = stored
+		}
+	}
+
 	return &Manager{
 		client:    c,
 		store:     st,
 		model:     model,
 		histories: make(map[int64][]openai.ChatCompletionMessage),
+		rateLimit: rateLimit,
+		rates:     make(map[int64]rateWindow),
 	}
 }
 
@@ -60,6 +81,10 @@ func (m *Manager) Chat(ctx context.Context, userID int64, prompt string) (string
 	if m.client == nil {
 		m.mu.Unlock()
 		return "", errors.New("OpenAI client is not configured")
+	}
+	if err := m.consumeRate(userID); err != nil {
+		m.mu.Unlock()
+		return "", err
 	}
 	messages := append([]openai.ChatCompletionMessage{}, defaultSystemMessages...)
 	messages = append(messages, m.histories[userID]...)
@@ -111,6 +136,25 @@ func (m *Manager) Model() string {
 	return m.model
 }
 
+// SetRateLimit updates the allowed chats per minute. A value <=0 disables the limit.
+func (m *Manager) SetRateLimit(limit int) error {
+	m.mu.Lock()
+	m.rateLimit = limit
+	m.rates = make(map[int64]rateWindow) // reset windows when changing limit
+	m.mu.Unlock()
+	if m.store == nil {
+		return nil
+	}
+	return m.store.SetRateLimit(limit)
+}
+
+// RateLimit returns current per-minute limit (<=0 means disabled).
+func (m *Manager) RateLimit() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.rateLimit
+}
+
 // ListModels fetches available model IDs from the API.
 func (m *Manager) ListModels(ctx context.Context) ([]string, error) {
 	m.mu.Lock()
@@ -129,4 +173,23 @@ func (m *Manager) ListModels(ctx context.Context) ([]string, error) {
 	}
 	sort.Strings(models)
 	return models, nil
+}
+
+// consumeRate assumes m.mu is held; it increments the current window and returns an error if exceeded.
+func (m *Manager) consumeRate(userID int64) error {
+	limit := m.rateLimit
+	if limit <= 0 {
+		return nil
+	}
+	now := time.Now()
+	window := m.rates[userID]
+	if window.start.IsZero() || now.Sub(window.start) >= time.Minute {
+		window = rateWindow{start: now, count: 0}
+	}
+	if window.count >= limit {
+		return fmt.Errorf("已达到每分钟 %d 次聊天上限，请稍后再试。", limit)
+	}
+	window.count++
+	m.rates[userID] = window
+	return nil
 }
