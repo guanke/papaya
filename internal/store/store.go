@@ -15,8 +15,8 @@ const (
 	usersBucket    = "users"
 	settingsBucket = "settings"
 	imagesBucket   = "images"
-    subsBucket     = "subs"
-    historyBucket  = "history"
+	subsBucket     = "subs"
+	historyBucket  = "history"
 	modelKey       = "openai_model"
 	rateLimitKey   = "chat_rate_limit"
 	visionKey      = "vision_enabled"
@@ -33,14 +33,49 @@ type User struct {
 	Persona     string `json:"persona,omitempty"`
 }
 
+// UnmarshalJSON implements custom JSON unmarshaling to handle backward compatibility.
+// Old format had ID as int64, new format has ID as string.
+func (u *User) UnmarshalJSON(data []byte) error {
+	// Try new format first (string ID)
+	type UserAlias User
+	var alias UserAlias
+	if err := json.Unmarshal(data, &alias); err == nil && alias.ID != "" {
+		*u = User(alias)
+		return nil
+	}
+
+	// Fall back to old format (int64 ID)
+	type OldUser struct {
+		ID          int64  `json:"id"`
+		Username    string `json:"username"`
+		Points      int    `json:"points"`
+		LastCheckin string `json:"last_checkin"`
+		IsAdmin     bool   `json:"is_admin"`
+		DisplayName string `json:"display_name"`
+		Persona     string `json:"persona,omitempty"`
+	}
+	var old OldUser
+	if err := json.Unmarshal(data, &old); err != nil {
+		return err
+	}
+	u.ID = fmt.Sprintf("%d", old.ID)
+	u.Username = old.Username
+	u.Points = old.Points
+	u.LastCheckin = old.LastCheckin
+	u.IsAdmin = old.IsAdmin
+	u.DisplayName = old.DisplayName
+	u.Persona = old.Persona
+	return nil
+}
+
 // Media represents a saved telegram photo or video.
 type Media struct {
-	ID        string `json:"id"`
-	FileID    string `json:"file_id"`
-	Type      string `json:"type"` // "photo" or "video"
-	Caption   string `json:"caption"`
-	AddedBy   string `json:"added_by"`
-	CreatedAt int64  `json:"created_at"`
+	ID        string   `json:"id"`
+	FileID    string   `json:"file_id"`
+	Type      string   `json:"type"` // "photo" or "video"
+	Caption   string   `json:"caption"`
+	AddedBy   string   `json:"added_by"`
+	CreatedAt int64    `json:"created_at"`
 	R2Key     string   `json:"r2_key,omitempty"` // Key in R2 bucket if uploaded
 	Tags      []string `json:"tags,omitempty"`
 }
@@ -69,12 +104,12 @@ func New(path string) (*Store, error) {
 		if _, e := tx.CreateBucketIfNotExists([]byte(imagesBucket)); e != nil {
 			return e
 		}
-        if _, e := tx.CreateBucketIfNotExists([]byte(subsBucket)); e != nil {
-            return e
-        }
-        if _, e := tx.CreateBucketIfNotExists([]byte(historyBucket)); e != nil {
-            return e
-        }
+		if _, e := tx.CreateBucketIfNotExists([]byte(subsBucket)); e != nil {
+			return e
+		}
+		if _, e := tx.CreateBucketIfNotExists([]byte(historyBucket)); e != nil {
+			return e
+		}
 		return nil
 	})
 	if err != nil {
@@ -411,8 +446,8 @@ func (s *Store) GetRandomMedia() (*Media, error) {
 		return nil, nil // No media
 	}
 
-    randomIndex := time.Now().UnixNano() % int64(len(list))
-    return &list[randomIndex], nil
+	randomIndex := time.Now().UnixNano() % int64(len(list))
+	return &list[randomIndex], nil
 }
 
 // ListMedia retrieves all media with pagination.
@@ -435,7 +470,7 @@ func (s *Store) ListMedia(limit, offset int) ([]Media, error) {
 	if err != nil {
 		return nil, err
 	}
-    // Sort by CreatedAt desc
+	// Sort by CreatedAt desc
 	sort.Slice(list, func(i, j int) bool { return list[i].CreatedAt > list[j].CreatedAt })
 
 	if offset >= len(list) {

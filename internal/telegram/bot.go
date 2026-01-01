@@ -47,8 +47,8 @@ func New(cfg *config.Config, st *store.Store, manager *chat.Manager) (*Bot, erro
 	if cfg.R2AccountID != "" {
 		r2Client, err = r2.New(cfg.R2AccountID, cfg.R2AccessKeyID, cfg.R2SecretAccessKey, cfg.R2BucketName, cfg.R2PublicURL)
 		if err != nil {
-            slog.Error("failed to init R2", "error", err)
-        }
+			slog.Error("failed to init R2", "error", err)
+		}
 	}
 
 	return &Bot{api: api, store: st, chat: manager, cfg: cfg, r2: r2Client}, nil
@@ -111,6 +111,7 @@ func (b *Bot) handleMessage(msg *tgbotapi.Message) {
 	displayName := strings.TrimSpace(fmt.Sprintf("%s %s", msg.From.FirstName, msg.From.LastName))
 	user, err := b.store.GetOrCreateUser(userIDStr, username, displayName)
 	if err != nil {
+		slog.Error("GetOrCreateUser failed", "error", err, "userID", userIDStr, "username", username)
 		b.reply(msg, "无法加载用户信息，请稍后重试。")
 		return
 	}
@@ -176,10 +177,10 @@ func (b *Bot) handleMessage(msg *tgbotapi.Message) {
 	}
 
 	// Direct message with media
-	    if mediaID != "" && msg.Chat.IsPrivate() {
-        if err := b.store.SaveMedia(mediaID, mediaType, caption, userIDStr); err != nil {
-            slog.Error("save media failed", "error", err)
-            b.reply(msg, "保存失败。")
+	if mediaID != "" && msg.Chat.IsPrivate() {
+		if err := b.store.SaveMedia(mediaID, mediaType, caption, userIDStr); err != nil {
+			slog.Error("save media failed", "error", err)
+			b.reply(msg, "保存失败。")
 		} else {
 			b.reply(msg, "已保存到媒体库！")
 			// Broadcast
@@ -207,10 +208,10 @@ func (b *Bot) handleMessage(msg *tgbotapi.Message) {
 				caption = reply.Caption
 			}
 
-			            if mediaID != "" {
-                 if err := b.store.SaveMedia(mediaID, mediaType, caption, userIDStr); err != nil {
-                    slog.Error("save reply media failed", "error", err)
-                    b.reply(msg, "保存失败。")
+			if mediaID != "" {
+				if err := b.store.SaveMedia(mediaID, mediaType, caption, userIDStr); err != nil {
+					slog.Error("save reply media failed", "error", err)
+					b.reply(msg, "保存失败。")
 				} else {
 					b.reply(msg, "已保存引用的媒体！")
 					// Broadcast
@@ -419,13 +420,13 @@ func (b *Bot) handleRandomMedia(msg *tgbotapi.Message) {
 		if media.Type == "photo" {
 			d := tgbotapi.NewDocument(msg.Chat.ID, tgbotapi.FileID(media.FileID))
 			d.Caption = media.Caption
-			             if _, err2 := b.api.Send(d); err2 == nil {
-                return
-            }
-         }
-        slog.Error("send random media failed", "error", err)
-         b.reply(msg, "发送失败，可能文件已过期。")
-    }
+			if _, err2 := b.api.Send(d); err2 == nil {
+				return
+			}
+		}
+		slog.Error("send random media failed", "error", err)
+		b.reply(msg, "发送失败，可能文件已过期。")
+	}
 }
 
 func (b *Bot) handleR2Upload(msg *tgbotapi.Message) {
@@ -472,12 +473,12 @@ func (b *Bot) handleR2Upload(msg *tgbotapi.Message) {
 
 	// Vision Analysis
 	if visionEnabled, _ := b.store.GetVisionEnabled(); visionEnabled {
-        go func() {
-            tags, err := b.chat.AnalyzeImage(context.Background(), url)
-            if err != nil {
-                slog.Error("vision analysis failed", "error", err)
-                return
-            }
+		go func() {
+			tags, err := b.chat.AnalyzeImage(context.Background(), url)
+			if err != nil {
+				slog.Error("vision analysis failed", "error", err)
+				return
+			}
 			if len(tags) > 0 {
 				b.store.SetMediaTags(key, tags) // key is same as ID in R2 store context? Wait, R2Key vs MediaID.
 				// In store.go: SetMediaTags(id string, tags []string).
@@ -566,8 +567,8 @@ func (b *Bot) showMediaList(chatID int64, page int) {
 
 	total, err := b.store.CountMedia()
 	if err != nil {
-	    slog.Error("count media failed", "error", err)
-	    return
+		slog.Error("count media failed", "error", err)
+		return
 	}
 	totalPages := (total + limit - 1) / limit
 	if totalPages == 0 {
@@ -735,10 +736,10 @@ func (b *Bot) handleSetPoints(msg *tgbotapi.Message) {
 		return
 	}
 	userIDStr := args[0]
-	// Check if int just to be safe it's a valid ID format? 
+	// Check if int just to be safe it's a valid ID format?
 	// Or we just trust string. Original was:
 	// userID, err := strconv.ParseInt(args[0], 10, 64)
-	
+
 	points, err := strconv.Atoi(args[1])
 	if err != nil {
 		b.reply(msg, "积分格式错误。")
@@ -790,7 +791,7 @@ func (b *Bot) handleAddPoints(msg *tgbotapi.Message) {
 		return
 	}
 	userIDStr := args[0]
-	
+
 	delta, err := strconv.Atoi(args[1])
 	if err != nil {
 		b.reply(msg, "增减值格式错误。")
@@ -824,7 +825,7 @@ func (b *Bot) handleSetAdmin(msg *tgbotapi.Message) {
 		return
 	}
 	userIDStr := args[0]
-	
+
 	updated, err := b.store.PromoteAdmin(userIDStr)
 	if err != nil {
 		b.reply(msg, fmt.Sprintf("设置管理员失败：%v", err))
@@ -952,7 +953,7 @@ func (b *Bot) handleUserSelection(cb *tgbotapi.CallbackQuery) {
 		return
 	}
 	targetIDStr := parts[1]
-	
+
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(
 		[]tgbotapi.InlineKeyboardButton{
 			tgbotapi.NewInlineKeyboardButtonData("+10", fmt.Sprintf("add:%s:10", targetIDStr)),
@@ -1186,7 +1187,7 @@ func (b *Bot) handleCustomPointsRequest(cb *tgbotapi.CallbackQuery) {
 		return
 	}
 	targetIDStr := parts[1]
-	
+
 	b.userStates.Store(cb.From.ID, fmt.Sprintf("waiting_custom_points:%s", targetIDStr))
 	msg := tgbotapi.NewMessage(cb.Message.Chat.ID, fmt.Sprintf("请输入要给用户 %s 增加的积分（支持负数）：", targetIDStr))
 	if _, err := b.api.Send(msg); err != nil {
@@ -1203,7 +1204,7 @@ func (b *Bot) handleAdjustPoints(cb *tgbotapi.CallbackQuery) {
 		return
 	}
 	targetIDStr := parts[1]
-	
+
 	delta, err := strconv.Atoi(parts[2])
 	if err != nil {
 		return
@@ -1231,7 +1232,7 @@ func (b *Bot) handlePromote(cb *tgbotapi.CallbackQuery) {
 		return
 	}
 	targetIDStr := parts[1]
-	
+
 	updated, err := b.store.PromoteAdmin(targetIDStr)
 	if err != nil {
 		msg := tgbotapi.NewMessage(cb.Message.Chat.ID, fmt.Sprintf("设置管理员失败：%v", err))
