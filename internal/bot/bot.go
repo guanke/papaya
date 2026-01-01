@@ -3,6 +3,9 @@ package bot
 import (
 	"context"
 	"fmt"
+    "bytes"
+    "net/http"
+    "io"
 	"log"
 	"strconv"
 	"strings"
@@ -13,6 +16,7 @@ import (
 
 	"github.com/guanke/papaya/internal/chat"
 	"github.com/guanke/papaya/internal/config"
+	"github.com/guanke/papaya/internal/r2"
 	"github.com/guanke/papaya/internal/store"
 )
 
@@ -29,6 +33,7 @@ type Bot struct {
 	chat       *chat.Manager
 	cfg        *config.Config
 	userStates sync.Map // map[int64]string (userID -> state)
+    r2         *r2.Client
 }
 
 // New creates a Bot instance.
@@ -37,7 +42,16 @@ func New(cfg *config.Config, st *store.Store, manager *chat.Manager) (*Bot, erro
 	if err != nil {
 		return nil, err
 	}
-	return &Bot{api: api, store: st, chat: manager, cfg: cfg}, nil
+    
+    var r2Client *r2.Client
+    if cfg.R2AccountID != "" {
+        r2Client, err = r2.New(cfg.R2AccountID, cfg.R2AccessKeyID, cfg.R2SecretAccessKey, cfg.R2BucketName, cfg.R2PublicURL)
+        if err != nil {
+            log.Printf("failed to init R2: %v", err)
+        }
+    }
+
+	return &Bot{api: api, store: st, chat: manager, cfg: cfg, r2: r2Client}, nil
 }
 
 // Run starts processing Telegram updates.
@@ -53,7 +67,10 @@ func (b *Bot) Run(ctx context.Context) error {
 		{Command: "setmodel", Description: "[Admin] 切换模型"},
 		{Command: "setadmin", Description: "[Admin] 设管理员"},
 		{Command: "image", Description: "随机美图/视频"},
+		{Command: "image", Description: "随机美图/视频"},
 		{Command: "images", Description: "[Admin] 媒体管理"},
+		{Command: "r2list", Description: "[Admin] R2文件列表"},
+		{Command: "r2upload", Description: "[Admin] 上传(回复图片)"},
 	}
 	if _, err := b.api.Request(tgbotapi.NewSetMyCommands(commands...)); err != nil {
 		log.Printf("set commands failed: %v", err)
@@ -206,6 +223,24 @@ func (b *Bot) handleCommand(user *store.User, msg *tgbotapi.Message) {
 			return
 		}
 		b.handleDeleteMedia(msg)
+	case "r2upload":
+		if !user.IsAdmin {
+			b.reply(msg, "需要管理员权限。")
+			return
+		}
+		b.handleR2Upload(msg)
+	case "r2list":
+		if !user.IsAdmin {
+			b.reply(msg, "需要管理员权限。")
+			return
+		}
+		b.handleR2List(msg)
+	case "r2del":
+		if !user.IsAdmin {
+			b.reply(msg, "需要管理员权限。")
+			return
+		}
+		b.handleR2Delete(msg)
 	case "checkin":
 		gained, updated, err := b.store.CheckIn(user.ID, checkInReward)
 		if err != nil {
@@ -311,6 +346,89 @@ func (b *Bot) handleRandomMedia(msg *tgbotapi.Message) {
         log.Printf("send random media failed: %v", err)
          b.reply(msg, "发送失败，可能文件已过期。")
     }
+}
+
+func (b *Bot) handleR2Upload(msg *tgbotapi.Message) {
+    if b.r2 == nil {
+        b.reply(msg, "R2 未配置。")
+        return
+    }
+    if msg.ReplyToMessage == nil || len(msg.ReplyToMessage.Photo) == 0 {
+        b.reply(msg, "请回复一张图片进行上传。")
+        return
+    }
+    
+    // Get file info
+    photo := msg.ReplyToMessage.Photo[len(msg.ReplyToMessage.Photo)-1]
+    fileInfo, err := b.api.GetFile(tgbotapi.FileConfig{FileID: photo.FileID})
+    if err != nil {
+        b.reply(msg, "获取文件信息失败。")
+        return
+    }
+    
+    // Download file
+    fileURL := fileInfo.Link(b.cfg.BotToken)
+    resp, err := http.Get(fileURL)
+    if err != nil {
+        b.reply(msg, fmt.Sprintf("下载失败：%v", err))
+        return
+    }
+    defer resp.Body.Close()
+    
+    data, err := io.ReadAll(resp.Body)
+    if err != nil {
+         b.reply(msg, fmt.Sprintf("读取失败：%v", err))
+         return
+    }
+
+    key := fmt.Sprintf("tg_%s_%d.jpg", photo.FileID, time.Now().Unix())
+    url, err := b.r2.Upload(key, data, "image/jpeg")
+    if err != nil {
+        b.reply(msg, fmt.Sprintf("上传 R2 失败：%v", err))
+        return
+    }
+    
+    b.reply(msg, fmt.Sprintf("上传成功！\nKey: %s\nURL: %s", key, url))
+}
+
+func (b *Bot) handleR2List(msg *tgbotapi.Message) {
+     if b.r2 == nil {
+        b.reply(msg, "R2 未配置。")
+        return
+    }
+    keys, err := b.r2.List()
+    if err != nil {
+        b.reply(msg, fmt.Sprintf("列表获取失败：%v", err))
+        return
+    }
+    if len(keys) == 0 {
+		b.reply(msg, "R2 存储桶为空。")
+		return
+	}
+    
+    var buffer bytes.Buffer
+    buffer.WriteString("R2 文件列表：\n")
+    for _, k := range keys {
+        buffer.WriteString(fmt.Sprintf("- %s\n", k))
+    }
+    b.reply(msg, buffer.String())
+}
+
+func (b *Bot) handleR2Delete(msg *tgbotapi.Message) {
+     if b.r2 == nil {
+        b.reply(msg, "R2 未配置。")
+        return
+    }
+    args := strings.Fields(msg.CommandArguments())
+    if len(args) != 1 {
+        b.reply(msg, "用法：/r2del <key>")
+        return
+    }
+    if err := b.r2.Delete(args[0]); err != nil {
+        b.reply(msg, fmt.Sprintf("删除失败：%v", err))
+        return
+    }
+    b.reply(msg, "删除成功。")
 }
 
 func (b *Bot) handleListMedia(msg *tgbotapi.Message) {
@@ -444,112 +562,9 @@ func (b *Bot) showUserList(chatID int64, page int) {
 	}
 }
 
-func (b *Bot) handleRandomMedia(msg *tgbotapi.Message) {
-    media, err := b.store.GetRandomMedia()
-    if err != nil {
-        b.reply(msg, "获取失败。")
-        return
-    }
-    if media == nil {
-        b.reply(msg, "媒体库为空。")
-        return
-    }
-    
-    var share tgbotapi.Chattable
-    if media.Type == "video" {
-        v := tgbotapi.NewVideo(msg.Chat.ID, tgbotapi.FileID(media.FileID))
-        v.Caption = media.Caption
-        share = v
-    } else {
-        p := tgbotapi.NewPhoto(msg.Chat.ID, tgbotapi.FileID(media.FileID))
-        p.Caption = media.Caption
-        share = p
-    }
 
-    if _, err := b.api.Send(share); err != nil {
-        log.Printf("send random media failed: %v", err)
-         b.reply(msg, "发送失败，可能文件已过期。")
-    }
-}
 
-func (b *Bot) handleListMedia(msg *tgbotapi.Message) {
-    page := 1
-    if msg.ReplyToMessage != nil && msg.ReplyToMessage.ReplyMarkup != nil {
-        // Callback handling logic will go here
-    }
-    b.showMediaList(msg.Chat.ID, page)
-}
-
-func (b *Bot) showMediaList(chatID int64, page int) {
-	limit := 5
-	offset := (page - 1) * limit
-	list, err := b.store.ListMedia(limit, offset)
-	if err != nil {
-		log.Printf("list media failed: %v", err)
-		return
-	}
-	if len(list) == 0 && page == 1 {
-		msg := tgbotapi.NewMessage(chatID, "媒体库为空。")
-		b.api.Send(msg)
-		return
-	}
-	
-    // Send list as text items with Delete buttons? Or send actual images?
-    // Listing images might spam. Let's send a list of IDs/Captions with Delete button.
-    // Or better: Send one message with text list and buttons.
-    
-    resp := tgbotapi.NewMessage(chatID, fmt.Sprintf("媒体列表 (第 %d 页)：", page))
-    var rows [][]tgbotapi.InlineKeyboardButton
-    
-    for _, m := range list {
-        label := m.Caption
-        if label == "" {
-            label = "无标题"
-        }
-        if len([]rune(label)) > 10 {
-            label = string([]rune(label)[:10]) + "..."
-        }
-        typeIcon := "📷"
-        if m.Type == "video" {
-            typeIcon = "📹"
-        }
-        
-        // Button to delete (CONFIRMATION needed? For simplicity: direct delete for now)
-        btn := tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("%s %s [删]", typeIcon, label), fmt.Sprintf("del_media:%s", m.ID))
-        rows = append(rows, []tgbotapi.InlineKeyboardButton{btn})
-    }
-
-	// Pagination buttons
-	var navRow []tgbotapi.InlineKeyboardButton
-	if page > 1 {
-		navRow = append(navRow, tgbotapi.NewInlineKeyboardButtonData("上一页", fmt.Sprintf("list_media:%d", page-1)))
-	}
-	if len(list) == limit {
-		navRow = append(navRow, tgbotapi.NewInlineKeyboardButtonData("下一页", fmt.Sprintf("list_media:%d", page+1)))
-	}
-	if len(navRow) > 0 {
-		rows = append(rows, navRow)
-	}
-
-	resp.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(rows...)
-	if _, err := b.api.Send(resp); err != nil {
-		log.Printf("send media list failed: %v", err)
-	}
-}
-
-func (b *Bot) handleDeleteMedia(msg *tgbotapi.Message) {
-    args := strings.Fields(msg.CommandArguments())
-    if len(args) != 1 {
-        b.reply(msg, "用法：/delimage <id>")
-        return
-    }
-    id := args[0]
-    if err := b.store.DeleteMedia(id); err != nil {
-        b.reply(msg, fmt.Sprintf("删除失败：%v", err))
-        return
-    }
-    b.reply(msg, "删除成功。")
-}
+func (b *Bot) handleSetPoints(msg *tgbotapi.Message) {
 	args := strings.Fields(msg.CommandArguments())
 	if len(args) != 2 {
 		b.reply(msg, "用法：/setpoints <user_id> <points>")

@@ -8,4 +8,8 @@ require (
 	go.etcd.io/bbolt v1.3.8
 )
 
-require golang.org/x/sys v0.4.0 // indirect
+require (
+	github.com/aws/aws-sdk-go v1.55.8 // indirect
+	github.com/jmespath/go-jmespath v0.4.0 // indirect
+	golang.org/x/sys v0.4.0 // indirect
+)
