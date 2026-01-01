@@ -19,6 +19,7 @@ import (
 const (
 	checkInReward = 10
 	chatCost      = 1
+	mediaReward   = 5 // Reward for adding media? Or just free. Let's make it free for now.
 )
 
 // Bot wires together Telegram updates, persistence, and chat backend.
@@ -51,6 +52,8 @@ func (b *Bot) Run(ctx context.Context) error {
 		{Command: "setpoints", Description: "[Admin] 设定积分"},
 		{Command: "setmodel", Description: "[Admin] 切换模型"},
 		{Command: "setadmin", Description: "[Admin] 设管理员"},
+		{Command: "image", Description: "随机美图/视频"},
+		{Command: "images", Description: "[Admin] 媒体管理"},
 	}
 	if _, err := b.api.Request(tgbotapi.NewSetMyCommands(commands...)); err != nil {
 		log.Printf("set commands failed: %v", err)
@@ -121,11 +124,59 @@ func (b *Bot) handleMessage(msg *tgbotapi.Message) {
 		return
 	}
 
+	// Handle simple media saving (Direct or Reply)
+    // Check if message has media
+    mediaID := ""
+    mediaType := ""
+    caption := msg.Caption
+
+    if len(msg.Photo) > 0 {
+        mediaID = msg.Photo[len(msg.Photo)-1].FileID
+        mediaType = "photo"
+    } else if msg.Video != nil {
+        mediaID = msg.Video.FileID
+        mediaType = "video"
+    }
+
+    // Direct message with media
+    if mediaID != "" && msg.Chat.IsPrivate() {
+        if err := b.store.SaveMedia(mediaID, mediaType, caption, userID); err != nil {
+            log.Printf("save media failed: %v", err)
+            b.reply(msg, "保存失败。")
+        } else {
+            b.reply(msg, "已保存到媒体库！")
+        }
+        return
+    }
+
 	// In group chats, only respond if mentioned
 	if msg.Chat.IsGroup() || msg.Chat.IsSuperGroup() {
 		if !strings.Contains(msg.Text, "@"+b.api.Self.UserName) {
 			return
 		}
+        // If mentioned and replying to a media message
+        if msg.ReplyToMessage != nil {
+            reply := msg.ReplyToMessage
+            if len(reply.Photo) > 0 {
+                mediaID = reply.Photo[len(reply.Photo)-1].FileID
+                mediaType = "photo"
+                caption = reply.Caption
+            } else if reply.Video != nil {
+                mediaID = reply.Video.FileID
+                mediaType = "video"
+                caption = reply.Caption
+            }
+
+            if mediaID != "" {
+                 if err := b.store.SaveMedia(mediaID, mediaType, caption, userID); err != nil {
+                    log.Printf("save reply media failed: %v", err)
+                    b.reply(msg, "保存失败。")
+                } else {
+                    b.reply(msg, "已保存引用的媒体！")
+                }
+                return
+            }
+        }
 	}
 
 	b.handleChat(user, msg)
@@ -141,6 +192,20 @@ func (b *Bot) handleCommand(user *store.User, msg *tgbotapi.Message) {
 		if _, err := b.api.Send(msgResp); err != nil {
 			log.Printf("send help failed: %v", err)
 		}
+	case "image":
+		b.handleRandomMedia(msg)
+	case "images":
+		if !user.IsAdmin {
+			b.reply(msg, "需要管理员权限。")
+			return
+		}
+		b.handleListMedia(msg)
+	case "delimage":
+		if !user.IsAdmin {
+			b.reply(msg, "需要管理员权限。")
+			return
+		}
+		b.handleDeleteMedia(msg)
 	case "checkin":
 		gained, updated, err := b.store.CheckIn(user.ID, checkInReward)
 		if err != nil {
@@ -220,6 +285,108 @@ func (b *Bot) handleChat(user *store.User, msg *tgbotapi.Message) {
 	b.reply(msg, answer)
 }
 
+func (b *Bot) handleRandomMedia(msg *tgbotapi.Message) {
+    media, err := b.store.GetRandomMedia()
+    if err != nil {
+        b.reply(msg, "获取失败。")
+        return
+    }
+    if media == nil {
+        b.reply(msg, "媒体库为空。")
+        return
+    }
+    
+    var share tgbotapi.Chattable
+    if media.Type == "video" {
+        v := tgbotapi.NewVideo(msg.Chat.ID, tgbotapi.FileID(media.FileID))
+        v.Caption = media.Caption
+        share = v
+    } else {
+        p := tgbotapi.NewPhoto(msg.Chat.ID, tgbotapi.FileID(media.FileID))
+        p.Caption = media.Caption
+        share = p
+    }
+
+    if _, err := b.api.Send(share); err != nil {
+        log.Printf("send random media failed: %v", err)
+         b.reply(msg, "发送失败，可能文件已过期。")
+    }
+}
+
+func (b *Bot) handleListMedia(msg *tgbotapi.Message) {
+    page := 1
+    if msg.ReplyToMessage != nil && msg.ReplyToMessage.ReplyMarkup != nil {
+        // Callback handling logic will go here
+    }
+    b.showMediaList(msg.Chat.ID, page)
+}
+
+func (b *Bot) showMediaList(chatID int64, page int) {
+	limit := 5
+	offset := (page - 1) * limit
+	list, err := b.store.ListMedia(limit, offset)
+	if err != nil {
+		log.Printf("list media failed: %v", err)
+		return
+	}
+	if len(list) == 0 && page == 1 {
+		msg := tgbotapi.NewMessage(chatID, "媒体库为空。")
+		b.api.Send(msg)
+		return
+	}
+	
+    resp := tgbotapi.NewMessage(chatID, fmt.Sprintf("媒体列表 (第 %d 页)：", page))
+    var rows [][]tgbotapi.InlineKeyboardButton
+    
+    for _, m := range list {
+        label := m.Caption
+        if label == "" {
+            label = "无标题"
+        }
+        if len([]rune(label)) > 10 {
+            label = string([]rune(label)[:10]) + "..."
+        }
+        typeIcon := "📷"
+        if m.Type == "video" {
+            typeIcon = "📹"
+        }
+        
+        btn := tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("%s %s [删]", typeIcon, label), fmt.Sprintf("del_media:%s", m.ID))
+        rows = append(rows, []tgbotapi.InlineKeyboardButton{btn})
+    }
+
+	// Pagination buttons
+	var navRow []tgbotapi.InlineKeyboardButton
+	if page > 1 {
+		navRow = append(navRow, tgbotapi.NewInlineKeyboardButtonData("上一页", fmt.Sprintf("list_media:%d", page-1)))
+	}
+	if len(list) == limit {
+		navRow = append(navRow, tgbotapi.NewInlineKeyboardButtonData("下一页", fmt.Sprintf("list_media:%d", page+1)))
+	}
+	if len(navRow) > 0 {
+		rows = append(rows, navRow)
+	}
+
+	resp.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(rows...)
+	if _, err := b.api.Send(resp); err != nil {
+		log.Printf("send media list failed: %v", err)
+	}
+}
+
+func (b *Bot) handleDeleteMedia(msg *tgbotapi.Message) {
+    args := strings.Fields(msg.CommandArguments())
+    if len(args) != 1 {
+        b.reply(msg, "用法：/delimage <id>")
+        return
+    }
+    id := args[0]
+    if err := b.store.DeleteMedia(id); err != nil {
+        b.reply(msg, fmt.Sprintf("删除失败：%v", err))
+        return
+    }
+    b.reply(msg, "删除成功。")
+}
+
 func (b *Bot) handleListUsers(msg *tgbotapi.Message) {
 	page := 1
 	if msg.ReplyToMessage != nil && msg.ReplyToMessage.ReplyMarkup != nil {
@@ -277,7 +444,112 @@ func (b *Bot) showUserList(chatID int64, page int) {
 	}
 }
 
-func (b *Bot) handleSetPoints(msg *tgbotapi.Message) {
+func (b *Bot) handleRandomMedia(msg *tgbotapi.Message) {
+    media, err := b.store.GetRandomMedia()
+    if err != nil {
+        b.reply(msg, "获取失败。")
+        return
+    }
+    if media == nil {
+        b.reply(msg, "媒体库为空。")
+        return
+    }
+    
+    var share tgbotapi.Chattable
+    if media.Type == "video" {
+        v := tgbotapi.NewVideo(msg.Chat.ID, tgbotapi.FileID(media.FileID))
+        v.Caption = media.Caption
+        share = v
+    } else {
+        p := tgbotapi.NewPhoto(msg.Chat.ID, tgbotapi.FileID(media.FileID))
+        p.Caption = media.Caption
+        share = p
+    }
+
+    if _, err := b.api.Send(share); err != nil {
+        log.Printf("send random media failed: %v", err)
+         b.reply(msg, "发送失败，可能文件已过期。")
+    }
+}
+
+func (b *Bot) handleListMedia(msg *tgbotapi.Message) {
+    page := 1
+    if msg.ReplyToMessage != nil && msg.ReplyToMessage.ReplyMarkup != nil {
+        // Callback handling logic will go here
+    }
+    b.showMediaList(msg.Chat.ID, page)
+}
+
+func (b *Bot) showMediaList(chatID int64, page int) {
+	limit := 5
+	offset := (page - 1) * limit
+	list, err := b.store.ListMedia(limit, offset)
+	if err != nil {
+		log.Printf("list media failed: %v", err)
+		return
+	}
+	if len(list) == 0 && page == 1 {
+		msg := tgbotapi.NewMessage(chatID, "媒体库为空。")
+		b.api.Send(msg)
+		return
+	}
+	
+    // Send list as text items with Delete buttons? Or send actual images?
+    // Listing images might spam. Let's send a list of IDs/Captions with Delete button.
+    // Or better: Send one message with text list and buttons.
+    
+    resp := tgbotapi.NewMessage(chatID, fmt.Sprintf("媒体列表 (第 %d 页)：", page))
+    var rows [][]tgbotapi.InlineKeyboardButton
+    
+    for _, m := range list {
+        label := m.Caption
+        if label == "" {
+            label = "无标题"
+        }
+        if len([]rune(label)) > 10 {
+            label = string([]rune(label)[:10]) + "..."
+        }
+        typeIcon := "📷"
+        if m.Type == "video" {
+            typeIcon = "📹"
+        }
+        
+        // Button to delete (CONFIRMATION needed? For simplicity: direct delete for now)
+        btn := tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("%s %s [删]", typeIcon, label), fmt.Sprintf("del_media:%s", m.ID))
+        rows = append(rows, []tgbotapi.InlineKeyboardButton{btn})
+    }
+
+	// Pagination buttons
+	var navRow []tgbotapi.InlineKeyboardButton
+	if page > 1 {
+		navRow = append(navRow, tgbotapi.NewInlineKeyboardButtonData("上一页", fmt.Sprintf("list_media:%d", page-1)))
+	}
+	if len(list) == limit {
+		navRow = append(navRow, tgbotapi.NewInlineKeyboardButtonData("下一页", fmt.Sprintf("list_media:%d", page+1)))
+	}
+	if len(navRow) > 0 {
+		rows = append(rows, navRow)
+	}
+
+	resp.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(rows...)
+	if _, err := b.api.Send(resp); err != nil {
+		log.Printf("send media list failed: %v", err)
+	}
+}
+
+func (b *Bot) handleDeleteMedia(msg *tgbotapi.Message) {
+    args := strings.Fields(msg.CommandArguments())
+    if len(args) != 1 {
+        b.reply(msg, "用法：/delimage <id>")
+        return
+    }
+    id := args[0]
+    if err := b.store.DeleteMedia(id); err != nil {
+        b.reply(msg, fmt.Sprintf("删除失败：%v", err))
+        return
+    }
+    b.reply(msg, "删除成功。")
+}
 	args := strings.Fields(msg.CommandArguments())
 	if len(args) != 2 {
 		b.reply(msg, "用法：/setpoints <user_id> <points>")
@@ -409,9 +681,12 @@ func (b *Bot) helpText(isAdmin bool) string {
 		"/addpoints <user_id> <delta> - 调整积分\n" +
 		"/setpoints <user_id> <points> - 设定积分\n" +
 		"/ratelimit - 查看当前聊天速率限制\n" +
+        "/ratelimit - 查看当前聊天速率限制\n" +
 		"/setratelimit <每分钟次数> - 设置聊天速率限制（0 表示不限）\n" +
 		"/setmodel <model> - 设置聊天模型\n" +
-		"/setadmin <user_id> - 赋予管理员权限"
+		"/setadmin <user_id> - 赋予管理员权限\n" +
+		"/images - 管理图片列表\n" +
+		"/delimage <id> - 删除图片"
 }
 
 func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
@@ -430,6 +705,24 @@ func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
 		b.handlePromote(cb)
 	case strings.HasPrefix(data, "setmodel:"):
 		b.handleModelSelection(cb)
+    case strings.HasPrefix(data, "list_media:"):
+        parts := strings.Split(data, ":")
+        if len(parts) == 2 {
+            page, _ := strconv.Atoi(parts[1])
+            b.showMediaList(cb.Message.Chat.ID, page)
+        }
+    case strings.HasPrefix(data, "del_media:"):
+        parts := strings.Split(data, ":")
+        if len(parts) == 2 {
+            // Check admin
+            if _, ok := b.ensureAdmin(cb); !ok {
+                return
+            }
+            id := parts[1]
+            b.store.DeleteMedia(id)
+            // Refresh list (stay on page 1 for simplicity)
+            b.showMediaList(cb.Message.Chat.ID, 1)
+        }
 	case strings.HasPrefix(data, "list_users:"):
 		parts := strings.Split(data, ":")
 		if len(parts) == 2 {

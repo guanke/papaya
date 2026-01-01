@@ -14,6 +14,7 @@ import (
 const (
 	usersBucket    = "users"
 	settingsBucket = "settings"
+	imagesBucket   = "images"
 	modelKey       = "openai_model"
 	rateLimitKey   = "chat_rate_limit"
 )
@@ -26,6 +27,16 @@ type User struct {
 	LastCheckin string `json:"last_checkin"`
 	IsAdmin     bool   `json:"is_admin"`
 	DisplayName string `json:"display_name"`
+}
+
+// Media represents a saved telegram photo or video.
+type Media struct {
+	ID        string `json:"id"`
+	FileID    string `json:"file_id"`
+	Type      string `json:"type"` // "photo" or "video"
+	Caption   string `json:"caption"`
+	AddedBy   int64  `json:"added_by"`
+	CreatedAt int64  `json:"created_at"`
 }
 
 // Store persists user data and settings to BoltDB.
@@ -47,6 +58,9 @@ func New(path string) (*Store, error) {
 			return e
 		}
 		if _, e := tx.CreateBucketIfNotExists([]byte(settingsBucket)); e != nil {
+			return e
+		}
+		if _, e := tx.CreateBucketIfNotExists([]byte(imagesBucket)); e != nil {
 			return e
 		}
 		return nil
@@ -286,6 +300,101 @@ func (s *Store) GetRateLimit() (limit int, ok bool, err error) {
 		return parseErr
 	})
 	return
+}
+
+// SaveMedia persists a new media record.
+func (s *Store) SaveMedia(fileID, mediaType, caption string, addedBy int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(imagesBucket))
+		id := fmt.Sprintf("%d", time.Now().UnixNano())
+		media := Media{
+			ID:        id,
+			FileID:    fileID,
+			Type:      mediaType,
+			Caption:   caption,
+			AddedBy:   addedBy,
+			CreatedAt: time.Now().Unix(),
+		}
+		data, err := json.Marshal(media)
+		if err != nil {
+			return err
+		}
+		return bucket.Put([]byte(id), data)
+	})
+}
+
+// GetRandomMedia returns a random media from the store.
+func (s *Store) GetRandomMedia() (*Media, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var list []Media
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(imagesBucket))
+		return bucket.ForEach(func(_, v []byte) error {
+			var m Media
+			if err := json.Unmarshal(v, &m); err == nil {
+				list = append(list, m)
+			}
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(list) == 0 {
+		return nil, nil // No media
+	}
+
+    randomIndex := time.Now().UnixNano() % int64(len(list))
+    return &list[randomIndex], nil
+}
+
+// ListMedia retrieves all media with pagination.
+func (s *Store) ListMedia(limit, offset int) ([]Media, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var list []Media
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(imagesBucket))
+		return bucket.ForEach(func(_, v []byte) error {
+			var m Media
+			if err := json.Unmarshal(v, &m); err != nil {
+				return err
+			}
+			list = append(list, m)
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+    // Sort by CreatedAt desc
+	sort.Slice(list, func(i, j int) bool { return list[i].CreatedAt > list[j].CreatedAt })
+
+	if offset >= len(list) {
+		return []Media{}, nil
+	}
+	end := offset + limit
+	if end > len(list) {
+		end = len(list)
+	}
+	return list[offset:end], nil
+}
+
+// DeleteMedia removes a media by ID.
+func (s *Store) DeleteMedia(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(imagesBucket))
+		return bucket.Delete([]byte(id))
+	})
 }
 
 func itob(v int64) []byte {

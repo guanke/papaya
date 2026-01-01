@@ -76,3 +76,56 @@ func TestStore_ListUsersParameters(t *testing.T) {
 		})
 	}
 }
+
+func TestStore_Media(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "papaya_media_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "test.db")
+	s, err := New(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	// 1. Save Media
+    err = s.SaveMedia("file_123", "photo", "caption 1", 1001)
+    if err != nil {
+        t.Fatalf("SaveMedia failed: %v", err)
+    }
+    
+    // 2. Get Random
+    m, err := s.GetRandomMedia()
+    if err != nil {
+        t.Fatalf("GetRandomMedia failed: %v", err)
+    }
+    if m == nil {
+        t.Fatal("GetRandomMedia returned nil")
+    }
+    if m.FileID != "file_123" {
+        t.Errorf("got fileID %s, want file_123", m.FileID)
+    }
+    
+    // 3. List
+    list, err := s.ListMedia(10, 0)
+    if err != nil {
+        t.Fatalf("ListMedia failed: %v", err)
+    }
+    if len(list) != 1 {
+        t.Errorf("got list len %d, want 1", len(list))
+    }
+    
+    // 4. Delete
+    err = s.DeleteMedia(m.ID)
+    if err != nil {
+        t.Fatalf("DeleteMedia failed: %v", err)
+    }
+    
+    list, err = s.ListMedia(10, 0)
+    if len(list) != 0 {
+        t.Errorf("got list len %d after delete, want 0", len(list))
+    }
+}
