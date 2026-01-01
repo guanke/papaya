@@ -33,41 +33,6 @@ type User struct {
 	Persona     string `json:"persona,omitempty"`
 }
 
-// UnmarshalJSON implements custom JSON unmarshaling to handle backward compatibility.
-// Old format had ID as int64, new format has ID as string.
-func (u *User) UnmarshalJSON(data []byte) error {
-	// Try new format first (string ID)
-	type UserAlias User
-	var alias UserAlias
-	if err := json.Unmarshal(data, &alias); err == nil && alias.ID != "" {
-		*u = User(alias)
-		return nil
-	}
-
-	// Fall back to old format (int64 ID)
-	type OldUser struct {
-		ID          int64  `json:"id"`
-		Username    string `json:"username"`
-		Points      int    `json:"points"`
-		LastCheckin string `json:"last_checkin"`
-		IsAdmin     bool   `json:"is_admin"`
-		DisplayName string `json:"display_name"`
-		Persona     string `json:"persona,omitempty"`
-	}
-	var old OldUser
-	if err := json.Unmarshal(data, &old); err != nil {
-		return err
-	}
-	u.ID = fmt.Sprintf("%d", old.ID)
-	u.Username = old.Username
-	u.Points = old.Points
-	u.LastCheckin = old.LastCheckin
-	u.IsAdmin = old.IsAdmin
-	u.DisplayName = old.DisplayName
-	u.Persona = old.Persona
-	return nil
-}
-
 // Media represents a saved telegram photo or video.
 type Media struct {
 	ID        string   `json:"id"`
