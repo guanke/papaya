@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"testing"
 )
 
@@ -43,12 +42,12 @@ func TestStore_ListUsersParameters(t *testing.T) {
 
 	// 3. Test pagination
 	tests := []struct {
-		name     string
-		limit    int
-		offset   int
-		wantLen  int
-		startID  int64
-		endID    int64
+		name    string
+		limit   int
+		offset  int
+		wantLen int
+		startID int64
+		endID   int64
 	}{
 		{"Page 1", 10, 0, 10, 101, 110},
 		{"Page 2", 10, 10, 10, 111, 120},
