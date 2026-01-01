@@ -128,4 +128,59 @@ func TestStore_Media(t *testing.T) {
     if len(list) != 0 {
         t.Errorf("got list len %d after delete, want 0", len(list))
     }
+    list, err = s.ListMedia(10, 0)
+    if len(list) != 0 {
+        t.Errorf("got list len %d after delete, want 0", len(list))
+    }
+}
+
+func TestStore_MediaR2AndCount(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "papaya_media_r2_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "test.db")
+	s, err := New(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+    // 1. Initial count
+    count, err := s.CountMedia()
+    if err != nil {
+        t.Fatalf("CountMedia failed: %v", err)
+    }
+    if count != 0 {
+        t.Errorf("initial count %d, want 0", count)
+    }
+
+    // 2. Add item
+    err = s.SaveMedia("f1", "photo", "c1", 1)
+    if err != nil {
+        t.Fatal(err)
+    }
+
+    count, err = s.CountMedia()
+    if count != 1 {
+        t.Errorf("count %d, want 1", count)
+    }
+
+    // 3. Set R2 Key
+    // Need to find ID first
+    list, _ := s.ListMedia(1, 0)
+    id := list[0].ID
+    
+    err = s.SetMediaR2(id, "r2_key_123")
+    if err != nil {
+        t.Fatalf("SetMediaR2 failed: %v", err)
+    }
+
+    // 4. Verify R2 Key
+    list, _ = s.ListMedia(1, 0)
+    if list[0].R2Key != "r2_key_123" {
+        t.Errorf("got R2Key %s, want r2_key_123", list[0].R2Key)
+    }
 }

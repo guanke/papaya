@@ -37,6 +37,7 @@ type Media struct {
 	Caption   string `json:"caption"`
 	AddedBy   int64  `json:"added_by"`
 	CreatedAt int64  `json:"created_at"`
+	R2Key     string `json:"r2_key,omitempty"` // Key in R2 bucket if uploaded
 }
 
 // Store persists user data and settings to BoltDB.
@@ -302,6 +303,26 @@ func (s *Store) GetRateLimit() (limit int, ok bool, err error) {
 	return
 }
 
+// GetMedia returns a single media item by its ID.
+func (s *Store) GetMedia(id string) (*Media, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var media Media
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(imagesBucket))
+		val := bucket.Get([]byte(id))
+		if val == nil {
+			return errors.New("media not found")
+		}
+		return json.Unmarshal(val, &media)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &media, nil
+}
+
 // SaveMedia persists a new media record.
 func (s *Store) SaveMedia(fileID, mediaType, caption string, addedBy int64) error {
 	s.mu.Lock()
@@ -323,6 +344,32 @@ func (s *Store) SaveMedia(fileID, mediaType, caption string, addedBy int64) erro
 			return err
 		}
 		return bucket.Put([]byte(id), data)
+	})
+}
+
+// SetMediaR2 updates the R2Key for a media item.
+func (s *Store) SetMediaR2(id, r2Key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(imagesBucket))
+		data := bucket.Get([]byte(id))
+		if data == nil {
+			return fmt.Errorf("media %s not found", id)
+		}
+
+		var m Media
+		if err := json.Unmarshal(data, &m); err != nil {
+			return err
+		}
+		m.R2Key = r2Key
+
+		newData, err := json.Marshal(m)
+		if err != nil {
+			return err
+		}
+		return bucket.Put([]byte(id), newData)
 	})
 }
 
@@ -384,6 +431,20 @@ func (s *Store) ListMedia(limit, offset int) ([]Media, error) {
 		end = len(list)
 	}
 	return list[offset:end], nil
+}
+
+// CountMedia returns the total number of media items.
+func (s *Store) CountMedia() (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var count int
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(imagesBucket))
+		count = bucket.Stats().KeyN
+		return nil
+	})
+	return count, err
 }
 
 // DeleteMedia removes a media by ID.

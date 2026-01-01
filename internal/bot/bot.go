@@ -134,6 +134,16 @@ func (b *Bot) handleMessage(msg *tgbotapi.Message) {
 			b.reply(msg, fmt.Sprintf("用户 %d 当前积分：%d", updated.ID, updated.Points))
 			return
 		}
+		if s == "waiting_page_jump" {
+		    b.userStates.Delete(userID)
+		    page, err := strconv.Atoi(msg.Text)
+		    if err != nil || page < 1 {
+		        b.reply(msg, "输入无效，请输入有效的页码。")
+		        return 
+		    }
+		    b.showMediaList(msg.Chat.ID, page)
+		    return
+		}
 	}
 
 	if msg.IsCommand() {
@@ -153,6 +163,9 @@ func (b *Bot) handleMessage(msg *tgbotapi.Message) {
     } else if msg.Video != nil {
         mediaID = msg.Video.FileID
         mediaType = "video"
+    } else if msg.Document != nil && strings.HasPrefix(msg.Document.MimeType, "image/") {
+        mediaID = msg.Document.FileID
+        mediaType = "photo" // Treat image documents as photos for now
     }
 
     // Direct message with media
@@ -196,7 +209,10 @@ func (b *Bot) handleMessage(msg *tgbotapi.Message) {
         }
 	}
 
-	b.handleChat(user, msg)
+	// Only chat if there is text
+    if msg.Text != "" {
+    	b.handleChat(user, msg)
+    }
 }
 
 func (b *Bot) handleCommand(user *store.User, msg *tgbotapi.Message) {
@@ -433,15 +449,27 @@ func (b *Bot) handleR2Delete(msg *tgbotapi.Message) {
 
 func (b *Bot) handleListMedia(msg *tgbotapi.Message) {
     page := 1
-    if msg.ReplyToMessage != nil && msg.ReplyToMessage.ReplyMarkup != nil {
-        // Callback handling logic will go here
-    }
+    // New command always starts at page 1
     b.showMediaList(msg.Chat.ID, page)
 }
 
 func (b *Bot) showMediaList(chatID int64, page int) {
 	limit := 5
 	offset := (page - 1) * limit
+	
+	total, err := b.store.CountMedia()
+	if err != nil {
+	    log.Printf("count media failed: %v", err)
+	    return
+	}
+	totalPages := (total + limit - 1) / limit
+	if totalPages == 0 {
+	    totalPages = 1
+	}
+	if page > totalPages {
+	    page = totalPages
+	}
+	
 	list, err := b.store.ListMedia(limit, offset)
 	if err != nil {
 		log.Printf("list media failed: %v", err)
@@ -453,7 +481,7 @@ func (b *Bot) showMediaList(chatID int64, page int) {
 		return
 	}
 	
-    resp := tgbotapi.NewMessage(chatID, fmt.Sprintf("媒体列表 (第 %d 页)：", page))
+    resp := tgbotapi.NewMessage(chatID, fmt.Sprintf("媒体列表 (第 %d/%d 页，共 %d 个)：", page, totalPages, total))
     var rows [][]tgbotapi.InlineKeyboardButton
     
     for _, m := range list {
@@ -469,17 +497,31 @@ func (b *Bot) showMediaList(chatID int64, page int) {
             typeIcon = "📹"
         }
         
-        btn := tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("%s %s [删]", typeIcon, label), fmt.Sprintf("del_media:%s", m.ID))
-        rows = append(rows, []tgbotapi.InlineKeyboardButton{btn})
+        // R2 Status
+        r2Btn := tgbotapi.NewInlineKeyboardButtonData("☁️ 上传R2", fmt.Sprintf("upload_r2:%s", m.ID))
+        if m.R2Key != "" {
+            r2Btn = tgbotapi.NewInlineKeyboardButtonData("✅ 已上传", "noop")
+        }
+        
+        row := []tgbotapi.InlineKeyboardButton{
+             tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("%s %s", typeIcon, label), "noop"),
+             r2Btn,
+             tgbotapi.NewInlineKeyboardButtonData("🗑 删除", fmt.Sprintf("del_media:%s", m.ID)),
+        }
+        rows = append(rows, row)
     }
 
 	// Pagination buttons
 	var navRow []tgbotapi.InlineKeyboardButton
 	if page > 1 {
-		navRow = append(navRow, tgbotapi.NewInlineKeyboardButtonData("上一页", fmt.Sprintf("list_media:%d", page-1)))
+		navRow = append(navRow, tgbotapi.NewInlineKeyboardButtonData("⬅️ 上一页", fmt.Sprintf("list_media:%d", page-1)))
 	}
-	if len(list) == limit {
-		navRow = append(navRow, tgbotapi.NewInlineKeyboardButtonData("下一页", fmt.Sprintf("list_media:%d", page+1)))
+	
+	// Jump button
+	navRow = append(navRow, tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("%d/%d 📄", page, totalPages), "jump_media_page"))
+	
+	if page < totalPages {
+		navRow = append(navRow, tgbotapi.NewInlineKeyboardButtonData("下一页 ➡️", fmt.Sprintf("list_media:%d", page+1)))
 	}
 	if len(navRow) > 0 {
 		rows = append(rows, navRow)
@@ -729,8 +771,7 @@ func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
     case strings.HasPrefix(data, "del_media:"):
         parts := strings.Split(data, ":")
         if len(parts) == 2 {
-            // Check admin
-            if _, ok := b.ensureAdmin(cb); !ok {
+             if _, ok := b.ensureAdmin(cb); !ok {
                 return
             }
             id := parts[1]
@@ -738,6 +779,15 @@ func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
             // Refresh list (stay on page 1 for simplicity)
             b.showMediaList(cb.Message.Chat.ID, 1)
         }
+    case strings.HasPrefix(data, "upload_r2:"):
+        parts := strings.Split(data, ":")
+        if len(parts) == 2 {
+            b.handleR2UploadCallback(cb, parts[1])
+        }
+    case data == "jump_media_page":
+        b.userStates.Store(cb.From.ID, "waiting_page_jump")
+        msg := tgbotapi.NewMessage(cb.Message.Chat.ID, "请输入要跳转的页码：")
+        b.api.Send(msg)
 	case strings.HasPrefix(data, "list_users:"):
 		parts := strings.Split(data, ":")
 		if len(parts) == 2 {
@@ -795,6 +845,92 @@ func (b *Bot) handleUserSelection(cb *tgbotapi.CallbackQuery) {
 	if _, err := b.api.Send(msg); err != nil {
 		log.Printf("send user actions failed: %v", err)
 	}
+}
+
+func (b *Bot) handleR2UploadCallback(cb *tgbotapi.CallbackQuery, mediaID string) {
+    if _, ok := b.ensureAdmin(cb); !ok {
+        return
+    }
+
+    media, err := b.store.GetMedia(mediaID)
+    if err != nil {
+        b.reply(cb.Message, "找不到该图片，可能已被删除。")
+        return
+    }
+    
+    // Check if already uploaded
+    if media.R2Key != "" {
+         b.reply(cb.Message, "该图片已存在于 R2。")
+         return
+    }
+    
+    if b.r2 == nil {
+         b.reply(cb.Message, "R2 未配置。")
+         return
+    }
+    
+    // Get file info from Telegram
+    fileInfo, err := b.api.GetFile(tgbotapi.FileConfig{FileID: media.FileID})
+    if err != nil {
+        log.Printf("get file info failed: %v", err)
+         b.reply(cb.Message, "无法获取图片信息 (Telegram API Error)。")
+        return
+    }
+
+    // Download file
+    fileURL := fileInfo.Link(b.cfg.BotToken)
+    resp, err := http.Get(fileURL)
+    if err != nil {
+         b.reply(cb.Message, fmt.Sprintf("下载失败：%v", err))
+        return
+    }
+    defer resp.Body.Close()
+    
+    data, err := io.ReadAll(resp.Body)
+    if err != nil {
+         b.reply(cb.Message, fmt.Sprintf("读取失败：%v", err))
+         return
+    }
+
+    // Determine extension
+    ext := ".jpg" 
+    if media.Type == "video" {
+        ext = ".mp4"
+    } else if strings.Contains(fileInfo.FilePath, ".") {
+        // try to get ext from path
+        parts := strings.Split(fileInfo.FilePath, ".")
+        if len(parts) > 1 {
+            ext = "." + parts[len(parts)-1]
+        }
+    }
+    
+    key := fmt.Sprintf("tg_%s_%s%s", media.FileID, media.ID, ext)
+    contentType := "image/jpeg"
+    if media.Type == "video" {
+        contentType = "video/mp4"
+    }
+    
+    url, err := b.r2.Upload(key, data, contentType)
+    if err != nil {
+        b.reply(cb.Message, fmt.Sprintf("上传 R2 失败：%v", err))
+        return
+    }
+    
+    // Update Store
+    if err := b.store.SetMediaR2(media.ID, key); err != nil {
+        log.Printf("update store r2 key failed: %v", err)
+    }
+    
+    // Send success notice (ephemeral or reply)
+    msg := tgbotapi.NewMessage(cb.Message.Chat.ID, fmt.Sprintf("上传成功！URL: %s", url))
+    b.api.Send(msg)
+    
+    // Refresh list current page? We don't know page. Just refresh to page 1 or stay? 
+    // We can't update the message easily without knowing the page. 
+    // Ideally we encode page in the callback data.
+    // For now, let's just let the user refresh manually or jump. 
+    // actually, updating to page 1 is safe fallback.
+    b.showMediaList(cb.Message.Chat.ID, 1)
 }
 
 func (b *Bot) handleCustomPointsRequest(cb *tgbotapi.CallbackQuery) {
