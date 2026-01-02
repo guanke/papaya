@@ -407,7 +407,7 @@ func (b *Bot) handleChat(user *store.User, msg *tgbotapi.Message) {
 	if _, err := b.store.AddPoints(user.ID, -chatCost); err != nil {
 		slog.Error("deduct points failed", "error", err)
 	}
-	b.reply(msg, answer)
+	b.replyMarkdown(msg, answer)
 }
 
 func (b *Bot) handleRandomMedia(msg *tgbotapi.Message) {
@@ -862,6 +862,20 @@ func (b *Bot) reply(msg *tgbotapi.Message, text string) {
 	resp.ReplyToMessageID = msg.MessageID
 	if _, err := b.api.Send(resp); err != nil {
 		slog.Error("send message failed", "error", err)
+	}
+}
+
+func (b *Bot) replyMarkdown(msg *tgbotapi.Message, text string) {
+	// Convert **bold** to *bold* for Telegram Legacy Markdown
+	formatted := strings.ReplaceAll(text, "**", "*")
+
+	resp := tgbotapi.NewMessage(msg.Chat.ID, formatted)
+	resp.ReplyToMessageID = msg.MessageID
+	resp.ParseMode = tgbotapi.ModeMarkdown
+
+	if _, err := b.api.Send(resp); err != nil {
+		slog.Warn("send markdown failed, fallback to plain text", "error", err)
+		b.reply(msg, text)
 	}
 }
 
