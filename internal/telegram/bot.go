@@ -139,7 +139,7 @@ func (b *Bot) handleMessage(msg *tgbotapi.Message) {
 				b.reply(msg, fmt.Sprintf("修改失败：%v", err))
 				return
 			}
-			b.reply(msg, fmt.Sprintf("用户 %d 当前积分：%d", updated.ID, updated.Points))
+			b.reply(msg, fmt.Sprintf("用户 %s 当前积分：%d", formatUserName(updated), updated.Points))
 			return
 		}
 		if s == "waiting_page_jump" {
@@ -568,6 +568,8 @@ func (b *Bot) showMediaList(chatID int64, page int) {
 	total, err := b.store.CountMedia()
 	if err != nil {
 		slog.Error("count media failed", "error", err)
+		msg := tgbotapi.NewMessage(chatID, "无法获取媒体列表，请稍后重试。")
+		b.api.Send(msg)
 		return
 	}
 	totalPages := (total + limit - 1) / limit
@@ -581,6 +583,8 @@ func (b *Bot) showMediaList(chatID int64, page int) {
 	list, err := b.store.ListMedia(limit, offset)
 	if err != nil {
 		slog.Error("list media failed", "error", err)
+		msg := tgbotapi.NewMessage(chatID, "无法获取媒体列表，请稍后重试。")
+		b.api.Send(msg)
 		return
 	}
 	if len(list) == 0 && page == 1 {
@@ -750,7 +754,7 @@ func (b *Bot) handleSetPoints(msg *tgbotapi.Message) {
 		b.reply(msg, fmt.Sprintf("修改失败：%v", err))
 		return
 	}
-	b.reply(msg, fmt.Sprintf("用户 %d 新积分：%d", updated.ID, updated.Points))
+	b.reply(msg, fmt.Sprintf("用户 %s 新积分：%d", formatUserName(updated), updated.Points))
 }
 
 func (b *Bot) handleRateLimit(msg *tgbotapi.Message) {
@@ -802,7 +806,7 @@ func (b *Bot) handleAddPoints(msg *tgbotapi.Message) {
 		b.reply(msg, fmt.Sprintf("修改失败：%v", err))
 		return
 	}
-	b.reply(msg, fmt.Sprintf("用户 %d 当前积分：%d", updated.ID, updated.Points))
+	b.reply(msg, fmt.Sprintf("用户 %s 当前积分：%d", formatUserName(updated), updated.Points))
 }
 
 func (b *Bot) handleSetModel(msg *tgbotapi.Message) {
@@ -831,7 +835,7 @@ func (b *Bot) handleSetAdmin(msg *tgbotapi.Message) {
 		b.reply(msg, fmt.Sprintf("设置管理员失败：%v", err))
 		return
 	}
-	b.reply(msg, fmt.Sprintf("用户 %d 已成为管理员。", updated.ID))
+	b.reply(msg, fmt.Sprintf("用户 %s 已成为管理员。", formatUserName(updated)))
 }
 
 func (b *Bot) reply(msg *tgbotapi.Message, text string) {
@@ -840,6 +844,26 @@ func (b *Bot) reply(msg *tgbotapi.Message, text string) {
 	if _, err := b.api.Send(resp); err != nil {
 		slog.Error("send message failed", "error", err)
 	}
+}
+
+func formatUserName(u *store.User) string {
+	if u == nil {
+		return ""
+	}
+	if u.Username != "" {
+		return "@" + u.Username
+	}
+	if strings.TrimSpace(u.DisplayName) != "" {
+		return strings.TrimSpace(u.DisplayName)
+	}
+	return fmt.Sprintf("用户%s", u.ID)
+}
+
+func (b *Bot) formatUserByID(id string) string {
+	if user, err := b.store.GetUser(id); err == nil {
+		return formatUserName(user)
+	}
+	return fmt.Sprintf("用户%s", id)
 }
 
 func (b *Bot) helpText(isAdmin bool) string {
@@ -967,7 +991,7 @@ func (b *Bot) handleUserSelection(cb *tgbotapi.CallbackQuery) {
 			tgbotapi.NewInlineKeyboardButtonData("设为管理员", fmt.Sprintf("promote:%s", targetIDStr)),
 		},
 	)
-	msg := tgbotapi.NewMessage(cb.Message.Chat.ID, fmt.Sprintf("请选择要对用户 %s 进行的操作：", targetIDStr))
+	msg := tgbotapi.NewMessage(cb.Message.Chat.ID, fmt.Sprintf("请选择要对用户 %s 进行的操作：", b.formatUserByID(targetIDStr)))
 	msg.ReplyMarkup = keyboard
 	if _, err := b.api.Send(msg); err != nil {
 		slog.Error("send user actions failed", "error", err)
@@ -1189,7 +1213,7 @@ func (b *Bot) handleCustomPointsRequest(cb *tgbotapi.CallbackQuery) {
 	targetIDStr := parts[1]
 
 	b.userStates.Store(cb.From.ID, fmt.Sprintf("waiting_custom_points:%s", targetIDStr))
-	msg := tgbotapi.NewMessage(cb.Message.Chat.ID, fmt.Sprintf("请输入要给用户 %s 增加的积分（支持负数）：", targetIDStr))
+	msg := tgbotapi.NewMessage(cb.Message.Chat.ID, fmt.Sprintf("请输入要给用户 %s 增加的积分（支持负数）：", b.formatUserByID(targetIDStr)))
 	if _, err := b.api.Send(msg); err != nil {
 		slog.Error("send input prompt failed", "error", err)
 	}
@@ -1217,7 +1241,7 @@ func (b *Bot) handleAdjustPoints(cb *tgbotapi.CallbackQuery) {
 		}
 		return
 	}
-	msg := tgbotapi.NewMessage(cb.Message.Chat.ID, fmt.Sprintf("用户 %d 当前积分：%d", updated.ID, updated.Points))
+	msg := tgbotapi.NewMessage(cb.Message.Chat.ID, fmt.Sprintf("用户 %s 当前积分：%d", formatUserName(updated), updated.Points))
 	if _, err := b.api.Send(msg); err != nil {
 		slog.Error("send adjust result failed", "error", err)
 	}
@@ -1241,7 +1265,7 @@ func (b *Bot) handlePromote(cb *tgbotapi.CallbackQuery) {
 		}
 		return
 	}
-	msg := tgbotapi.NewMessage(cb.Message.Chat.ID, fmt.Sprintf("用户 %s 已成为管理员。", updated.ID))
+	msg := tgbotapi.NewMessage(cb.Message.Chat.ID, fmt.Sprintf("用户 %s 已成为管理员。", formatUserName(updated)))
 	if _, err := b.api.Send(msg); err != nil {
 		slog.Error("send promote result failed", "error", err)
 	}
