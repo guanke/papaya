@@ -120,6 +120,27 @@ func (s *Store) GetOrCreateUser(id string, username, displayName string) (*User,
 	return &user, nil
 }
 
+// GetUser retrieves a user by ID without creating a new record.
+func (s *Store) GetUser(id string) (*User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var user User
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(usersBucket))
+		data := bucket.Get([]byte(id))
+		if data == nil {
+			return fmt.Errorf("user %s not found", id)
+		}
+		return json.Unmarshal(data, &user)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &user, nil
+}
+
 // AddPoints adds points to a user.
 func (s *Store) AddPoints(id string, delta int) (*User, error) {
 	s.mu.Lock()
