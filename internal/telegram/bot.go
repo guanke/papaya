@@ -3,6 +3,8 @@ package telegram
 import (
 	"bytes"
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log/slog"
@@ -34,6 +36,21 @@ type Bot struct {
 	cfg        *config.Config
 	userStates sync.Map // map[int64]string (userID -> state)
 	r2         *r2.Client
+	mediaIDs   sync.Map // map[string]string (token -> mediaID)
+}
+
+func (b *Bot) encodeMediaID(id string) string {
+	hash := sha1.Sum([]byte(id))
+	token := hex.EncodeToString(hash[:8])
+	b.mediaIDs.Store(token, id)
+	return token
+}
+
+func (b *Bot) resolveMediaID(token string) string {
+	if id, ok := b.mediaIDs.Load(token); ok {
+		return id.(string)
+	}
+	return token
 }
 
 // New creates a Bot instance.
@@ -605,8 +622,10 @@ func (b *Bot) showMediaList(chatID int64, page int) {
 			label = string([]rune(label)[:10]) + "..."
 		}
 
+		token := b.encodeMediaID(m.ID)
+
 		// Button 1: Filename (Preview)
-		previewBtn := tgbotapi.NewInlineKeyboardButtonData(label, fmt.Sprintf("preview:%s", m.ID))
+		previewBtn := tgbotapi.NewInlineKeyboardButtonData(label, fmt.Sprintf("preview:%s", token))
 
 		// Button Row
 		row := []tgbotapi.InlineKeyboardButton{previewBtn}
@@ -625,16 +644,16 @@ func (b *Bot) showMediaList(chatID int64, page int) {
 				linkBtn = tgbotapi.NewInlineKeyboardButtonData("已上传", "noop")
 			}
 
-			delR2Btn := tgbotapi.NewInlineKeyboardButtonData("删R2", fmt.Sprintf("del_r2:%s", m.ID))
+			delR2Btn := tgbotapi.NewInlineKeyboardButtonData("删R2", fmt.Sprintf("del_r2:%s", token))
 			row = append(row, linkBtn, delR2Btn)
 		} else {
 			// Not uploaded
-			uploadBtn := tgbotapi.NewInlineKeyboardButtonData("上传", fmt.Sprintf("upload_r2:%s", m.ID))
+			uploadBtn := tgbotapi.NewInlineKeyboardButtonData("上传", fmt.Sprintf("upload_r2:%s", token))
 			row = append(row, uploadBtn)
 		}
 
 		// Button Last: Delete (Global)
-		delBtn := tgbotapi.NewInlineKeyboardButtonData("删除", fmt.Sprintf("del_media:%s", m.ID))
+		delBtn := tgbotapi.NewInlineKeyboardButtonData("删除", fmt.Sprintf("del_media:%s", token))
 		row = append(row, delBtn)
 
 		rows = append(rows, row)
@@ -915,7 +934,7 @@ func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
 			if _, ok := b.ensureAdmin(cb); !ok {
 				return
 			}
-			id := parts[1]
+			id := b.resolveMediaID(parts[1])
 			b.handleDeleteMediaCallback(cb, id)
 		}
 	case strings.HasPrefix(data, "del_r2:"):
@@ -924,18 +943,18 @@ func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
 			if _, ok := b.ensureAdmin(cb); !ok {
 				return
 			}
-			id := parts[1]
+			id := b.resolveMediaID(parts[1])
 			b.handleDeleteR2Callback(cb, id)
 		}
 	case strings.HasPrefix(data, "preview:"):
 		parts := strings.Split(data, ":")
 		if len(parts) == 2 {
-			b.handlePreviewMedia(cb, parts[1])
+			b.handlePreviewMedia(cb, b.resolveMediaID(parts[1]))
 		}
 	case strings.HasPrefix(data, "upload_r2:"):
 		parts := strings.Split(data, ":")
 		if len(parts) == 2 {
-			b.handleR2UploadCallback(cb, parts[1])
+			b.handleR2UploadCallback(cb, b.resolveMediaID(parts[1]))
 		}
 	case data == "jump_media_page":
 		b.userStates.Store(cb.From.ID, "waiting_page_jump")
