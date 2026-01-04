@@ -306,6 +306,21 @@ func (m *Manager) RateLimit() int {
 	return int(m.rateLimit)
 }
 
+// ClearHistory removes all chat history for a user from both memory and persistent storage.
+func (m *Manager) ClearHistory(userID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Clear from memory
+	delete(m.histories, userID)
+
+	// Clear from store
+	if m.store != nil {
+		return m.store.ClearChatHistory(userID)
+	}
+	return nil
+}
+
 // ListModels fetches available model IDs from the API.
 func (m *Manager) ListModels(ctx context.Context) ([]string, error) {
 	m.mu.Lock()

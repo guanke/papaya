@@ -78,18 +78,15 @@ func (b *Bot) Run(ctx context.Context) error {
 		{Command: "checkin", Description: "每日签到"},
 		{Command: "points", Description: "查看积分"},
 		{Command: "help", Description: "使用说明"},
+		{Command: "clearmemory", Description: "清除聊天记忆"},
 		{Command: "users", Description: "[Admin] 用户列表"},
 		{Command: "addpoints", Description: "[Admin] 增减积分"},
 		{Command: "setpoints", Description: "[Admin] 设定积分"},
 		{Command: "setmodel", Description: "[Admin] 切换模型"},
 		{Command: "setadmin", Description: "[Admin] 设管理员"},
 		{Command: "image", Description: "随机美图/视频"},
-		{Command: "image", Description: "随机美图/视频"},
 		{Command: "images", Description: "[Admin] 媒体管理"},
 		{Command: "r2list", Description: "[Admin] R2文件列表"},
-		{Command: "r2upload", Description: "[Admin] 上传(回复图片)"},
-		{Command: "r2list", Description: "[Admin] R2文件列表"},
-		{Command: "r2upload", Description: "[Admin] 上传(回复图片)"},
 		{Command: "r2upload", Description: "[Admin] 上传(回复图片)"},
 		{Command: "sub", Description: "[Admin] 订阅新图通知"},
 		{Command: "unsub", Description: "[Admin] 取消订阅"},
@@ -369,6 +366,12 @@ func (b *Bot) handleCommand(user *store.User, msg *tgbotapi.Message) {
 			return
 		}
 		b.reply(msg, "人设已更新！")
+	case "clearmemory":
+		if err := b.chat.ClearHistory(user.ID); err != nil {
+			b.reply(msg, fmt.Sprintf("清除失败：%v", err))
+			return
+		}
+		b.reply(msg, "聊天记忆已清除！机器人将不会记得之前的对话内容。")
 	case "vision":
 		if !user.IsAdmin {
 			b.reply(msg, "需要管理员权限。")
@@ -903,6 +906,7 @@ func (b *Bot) helpText(isAdmin bool) string {
 	common := "欢迎使用积分机器人！\n" +
 		"/checkin - 签到获取积分（每日一次，东八区）\n" +
 		"/points - 查看当前积分\n" +
+		"/clearmemory - 清除聊天记忆（让机器人忘记之前的对话）\n" +
 		"直接发送消息即可与机器人聊天，聊天会消耗积分。如果聊天服务不可用，机器人会提示错误原因。"
 	if !isAdmin {
 		return common

@@ -35,3 +35,14 @@ func (s *Store) GetChatHistory(userID string) ([]byte, error) {
 	})
 	return data, err
 }
+
+// ClearChatHistory deletes the chat history for a user.
+func (s *Store) ClearChatHistory(userID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(historyBucket))
+		return bucket.Delete([]byte(userID))
+	})
+}
